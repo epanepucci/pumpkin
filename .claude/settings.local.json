@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo init:*)",
+      "Bash(cargo add:*)",
+      "Bash(cargo tree:*)",
+      "Bash(cargo build:*)",
+      "Bash(h5dump -n /home/ezepan/github/pumpkin/raw_data/lyzo-mono_9_master.h5)",
+      "Bash(h5dump -d /entry/instrument/detector/beam_center_x /home/ezepan/github/pumpkin/raw_data/lyzo-mono_9_master.h5)",
+      "Bash(h5dump -d /entry/instrument/detector/detector_distance /home/ezepan/github/pumpkin/raw_data/lyzo-mono_9_master.h5)",
+      "Bash(h5dump -d /entry/instrument/beam/incident_wavelength /home/ezepan/github/pumpkin/raw_data/lyzo-mono_9_master.h5)",
+      "Bash(h5dump -d /entry/instrument/detector/x_pixel_size /home/ezepan/github/pumpkin/raw_data/lyzo-mono_9_master.h5)",
+      "Bash(h5dump -d /entry/instrument/detector/saturation_value /home/ezepan/github/pumpkin/raw_data/lyzo-mono_9_master.h5)",
+      "Bash(h5dump -d /entry/instrument/detector/bit_depth_image /home/ezepan/github/pumpkin/raw_data/lyzo-mono_9_master.h5)",
+      "Bash(h5dump -d /entry/instrument/detector/count_time /home/ezepan/github/pumpkin/raw_data/lyzo-mono_9_master.h5)",
+      "Bash(h5dump:*)"
+    ]
+  }
+}
