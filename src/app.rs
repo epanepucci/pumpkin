@@ -354,6 +354,8 @@ impl PumpkinApp {
 impl eframe::App for PumpkinApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         let quit_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Q);
+        let next_image_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::ArrowRight);
+        let previous_image_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::ArrowLeft);
         let goto_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::G);
 
         if ctx.input_mut(|i| i.consume_shortcut(&goto_shortcut)) {
@@ -367,6 +369,23 @@ impl eframe::App for PumpkinApp {
 
         if ctx.input_mut(|i| i.consume_shortcut(&quit_shortcut)) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+
+        if let Some(ref series) = self.hdf5_series {
+            let total = series.total_frames;
+            let old_index = self.hdf5_frame_index;
+
+            if ctx.input_mut(|i| i.consume_shortcut(&previous_image_shortcut)) && self.hdf5_frame_index > 0 {
+                self.hdf5_frame_index -= 1;
+            }
+
+            if ctx.input_mut(|i| i.consume_shortcut(&next_image_shortcut)) && self.hdf5_frame_index + 1 < total {
+                self.hdf5_frame_index += 1;
+            }
+
+            if self.hdf5_frame_index != old_index {
+                self.load_hdf5_frame(self.hdf5_frame_index);
+            }
         }
 
         if self.poll_new_frame() {
