@@ -42,6 +42,10 @@ pub struct PumpkinApp {
     hdf5_series: Option<Hdf5Series>,
     /// Current frame index within the HDF5 series.
     hdf5_frame_index: usize,
+
+    // goto a given frame by number
+    show_goto_frame: bool,
+    goto_frame_input: String,
 }
 
 impl PumpkinApp {
@@ -58,6 +62,8 @@ impl PumpkinApp {
             connected: false,
             hdf5_series: None,
             hdf5_frame_index: 0,
+            show_goto_frame: false,
+            goto_frame_input: "0".to_string(),
         }
     }
 
@@ -85,6 +91,54 @@ impl PumpkinApp {
                 Err(e) => eprintln!("HDF5 frame {index}: {e}"),
             }
         }
+    }
+
+    pub fn goto_frame(&mut self, ctx: &egui::Context) {
+        if !self.show_goto_frame {
+            return;
+        }
+
+        egui::Window::new("Go to frame")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("Frame number:");
+
+                let response = ui.text_edit_singleline(&mut self.goto_frame_input);
+
+                // Auto-focus when opened
+                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    if let Ok(frame) = self.goto_frame_input.parse::<usize>() {
+                        self.do_goto_frame(frame);
+                    }
+                    self.show_goto_frame = false;
+                }
+
+                // ESC cancels
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.show_goto_frame = false;
+                }
+
+                ui.horizontal(|ui| {
+                    if ui.button("Go").clicked() {
+                        if let Ok(frame) = self.goto_frame_input.parse::<usize>() {
+                            self.do_goto_frame(frame);
+                        }
+                        self.show_goto_frame = false;
+                    }
+
+                    if ui.button("Cancel").clicked() {
+                        self.show_goto_frame = false;
+                    }
+                });
+            });
+    }
+
+    fn do_goto_frame(&mut self, frame: usize) {
+        // 👉 your logic here
+        self.hdf5_frame_index = frame;
+        self.load_hdf5_frame(self.hdf5_frame_index);
     }
 
     fn on_new_frame(&mut self, frame: Arc<Frame>) {
@@ -300,6 +354,16 @@ impl PumpkinApp {
 impl eframe::App for PumpkinApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         let quit_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Q);
+        let goto_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::G);
+
+        if ctx.input_mut(|i| i.consume_shortcut(&goto_shortcut)) {
+            self.show_goto_frame = true;
+            self.goto_frame_input.clear();
+        }
+
+        if self.show_goto_frame {
+            self.goto_frame(ctx);
+        }
 
         if ctx.input_mut(|i| i.consume_shortcut(&quit_shortcut)) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
