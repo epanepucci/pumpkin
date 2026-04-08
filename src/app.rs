@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use egui::{CentralPanel, Context, ScrollArea, SidePanel, Ui};
+use egui::{CentralPanel, Context, Key, KeyboardShortcut, Modifiers, ScrollArea, SidePanel, Ui};
 use tokio::sync::watch;
 
 use crate::frame::Frame;
@@ -299,6 +299,12 @@ impl PumpkinApp {
 
 impl eframe::App for PumpkinApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        let quit_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Q);
+
+        if ctx.input_mut(|i| i.consume_shortcut(&quit_shortcut)) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+
         if self.poll_new_frame() {
             ctx.request_repaint();
         }
