@@ -299,7 +299,7 @@ impl PumpkinApp {
         };
 
         // Fit to view the first time a frame arrives.
-        if self.pending_fit {
+        if self.pending_fit && self.hdf5_frame_index == 0 {
             self.view.fit_to(frame.width as f32, frame.height as f32, available);
             self.pending_fit = false;
         }
