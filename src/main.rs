@@ -11,9 +11,7 @@ use app::PumpkinApp;
 fn main() -> anyhow::Result<()> {
     // Build a tokio runtime and run it in a background thread so that async
     // monitor polling coexists with the egui event loop on the main thread.
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     let _guard = rt.enter();
 
     let native_options = eframe::NativeOptions {
@@ -25,12 +23,8 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    eframe::run_native(
-        "pumpkin",
-        native_options,
-        Box::new(|cc| Ok(Box::new(PumpkinApp::new(cc)))),
-    )
-    .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
+    eframe::run_native("pumpkin", native_options, Box::new(|cc| Ok(Box::new(PumpkinApp::new(cc)))))
+        .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
 
     Ok(())
 }

@@ -19,12 +19,7 @@ pub struct ImageTexture {
 
 impl Default for ImageTexture {
     fn default() -> Self {
-        Self {
-            handle: None,
-            last_vmin: f32::NAN,
-            last_vmax: f32::NAN,
-            last_frame_ptr: 0,
-        }
+        Self { handle: None, last_vmin: f32::NAN, last_vmax: f32::NAN, last_frame_ptr: 0 }
     }
 }
 
@@ -40,20 +35,16 @@ impl ImageTexture {
         vmin: f32,
         vmax: f32,
     ) -> Option<&TextureHandle> {
-        let needs_update = frame_ptr != self.last_frame_ptr
-            || vmin != self.last_vmin
-            || vmax != self.last_vmax;
+        let needs_update = frame_ptr != self.last_frame_ptr || vmin != self.last_vmin || vmax != self.last_vmax;
 
         if needs_update {
             let rgba = tone_map(&frame.pixels, frame.width, frame.height, vmin, vmax, frame.saturation_value);
-            let color_image =
-                ColorImage::from_rgba_unmultiplied([frame.width as usize, frame.height as usize], &rgba);
+            let color_image = ColorImage::from_rgba_unmultiplied([frame.width as usize, frame.height as usize], &rgba);
 
             match &mut self.handle {
                 Some(h) => h.set(color_image, TextureOptions::NEAREST),
                 None => {
-                    self.handle =
-                        Some(ctx.load_texture("image", color_image, TextureOptions::NEAREST));
+                    self.handle = Some(ctx.load_texture("image", color_image, TextureOptions::NEAREST));
                 }
             }
 
@@ -74,17 +65,15 @@ fn tone_map(pixels: &[u16], _w: u32, _h: u32, vmin: f32, vmax: f32, saturation: 
     let range = (vmax - vmin).max(1.0);
     let mut rgba = vec![0u8; pixels.len() * 4];
 
-    rgba.par_chunks_mut(4)
-        .zip(pixels.par_iter())
-        .for_each(|(chunk, &v)| {
-            if v >= saturation {
-                chunk.copy_from_slice(&[255, 0, 0, 255]);
-            } else {
-                let t = ((v as f32 - vmin) / range).clamp(0.0, 1.0);
-                let g = (t * 255.0) as u8;
-                chunk.copy_from_slice(&[g, g, g, 255]);
-            }
-        });
+    rgba.par_chunks_mut(4).zip(pixels.par_iter()).for_each(|(chunk, &v)| {
+        if v >= saturation {
+            chunk.copy_from_slice(&[0, 0, 0, 255]);
+        } else {
+            let t = ((v as f32 - vmin) / range).clamp(0.0, 1.0);
+            let g = (t * 255.0) as u8;
+            chunk.copy_from_slice(&[g, g, g, 255]);
+        }
+    });
 
     rgba
 }

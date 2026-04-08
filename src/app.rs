@@ -19,11 +19,7 @@ pub struct ContrastState {
 
 impl Default for ContrastState {
     fn default() -> Self {
-        Self {
-            vmin: 0.0,
-            vmax: 1000.0,
-            auto: true,
-        }
+        Self { vmin: 0.0, vmax: 1000.0, auto: true }
     }
 }
 
@@ -102,11 +98,8 @@ impl PumpkinApp {
     }
 
     fn connect(&mut self) {
-        let cfg = MonitorConfig {
-            dcu_url: self.dcu_url.clone(),
-            api_version: "1.8.0".to_string(),
-            poll_timeout_ms: 500,
-        };
+        let cfg =
+            MonitorConfig { dcu_url: self.dcu_url.clone(), api_version: "1.8.0".to_string(), poll_timeout_ms: 500 };
         self.frame_rx = Some(start_monitor_task(cfg));
         self.connected = true;
     }
@@ -150,14 +143,8 @@ impl PumpkinApp {
 
         ui.heading("Contrast");
         ui.checkbox(&mut self.contrast.auto, "Auto");
-        ui.add_enabled(
-            !self.contrast.auto,
-            egui::Slider::new(&mut self.contrast.vmin, 0.0..=65535.0).text("vmin"),
-        );
-        ui.add_enabled(
-            !self.contrast.auto,
-            egui::Slider::new(&mut self.contrast.vmax, 1.0..=65535.0).text("vmax"),
-        );
+        ui.add_enabled(!self.contrast.auto, egui::Slider::new(&mut self.contrast.vmin, 0.0..=65535.0).text("vmin"));
+        ui.add_enabled(!self.contrast.auto, egui::Slider::new(&mut self.contrast.vmax, 1.0..=65535.0).text("vmax"));
         ui.separator();
 
         ui.heading("Overlays");
@@ -177,31 +164,11 @@ impl PumpkinApp {
                     };
                 }
                 row!("Size", format!("{}×{}", frame.width, frame.height));
-                row!(
-                    "Beam X",
-                    meta.beam_center_x
-                        .map_or("-".into(), |v| format!("{v:.1} px"))
-                );
-                row!(
-                    "Beam Y",
-                    meta.beam_center_y
-                        .map_or("-".into(), |v| format!("{v:.1} px"))
-                );
-                row!(
-                    "Distance",
-                    meta.detector_distance
-                        .map_or("-".into(), |v| format!("{:.1} mm", v * 1000.0))
-                );
-                row!(
-                    "Wavelength",
-                    meta.wavelength
-                        .map_or("-".into(), |v| format!("{v:.4} Å"))
-                );
-                row!(
-                    "Exposure",
-                    meta.exposure_time
-                        .map_or("-".into(), |v| format!("{v:.4} s"))
-                );
+                row!("Beam X", meta.beam_center_x.map_or("-".into(), |v| format!("{v:.1} px")));
+                row!("Beam Y", meta.beam_center_y.map_or("-".into(), |v| format!("{v:.1} px")));
+                row!("Distance", meta.detector_distance.map_or("-".into(), |v| format!("{:.1} mm", v * 1000.0)));
+                row!("Wavelength", meta.wavelength.map_or("-".into(), |v| format!("{v:.4} Å")));
+                row!("Exposure", meta.exposure_time.map_or("-".into(), |v| format!("{v:.4} s")));
                 if let Some(n) = meta.image_number {
                     row!("Image #", n.to_string());
                 }
@@ -214,20 +181,14 @@ impl PumpkinApp {
         ui.heading("Open file");
         ui.horizontal(|ui| {
             if ui.button("Open TIFF…").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("TIFF", &["tif", "tiff"])
-                    .pick_file()
-                {
+                if let Some(path) = rfd::FileDialog::new().add_filter("TIFF", &["tif", "tiff"]).pick_file() {
                     if let Err(e) = self.load_tiff_file(&path) {
                         eprintln!("Failed to load {}: {e}", path.display());
                     }
                 }
             }
             if ui.button("Open HDF5…").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("HDF5 master", &["h5"])
-                    .pick_file()
-                {
+                if let Some(path) = rfd::FileDialog::new().add_filter("HDF5 master", &["h5"]).pick_file() {
                     if let Err(e) = self.load_hdf5_master(&path) {
                         eprintln!("Failed to open {}: {e}", path.display());
                     }
@@ -245,10 +206,7 @@ impl PumpkinApp {
             let old_index = self.hdf5_frame_index;
 
             // Slider over the full range.
-            ui.add(
-                egui::Slider::new(&mut self.hdf5_frame_index, 0..=total.saturating_sub(1))
-                    .text("frame"),
-            );
+            ui.add(egui::Slider::new(&mut self.hdf5_frame_index, 0..=total.saturating_sub(1)).text("frame"));
 
             ui.horizontal(|ui| {
                 if ui.button("◀").clicked() && self.hdf5_frame_index > 0 {
@@ -288,8 +246,7 @@ impl PumpkinApp {
 
         // Fit to view the first time a frame arrives.
         if self.pending_fit {
-            self.view
-                .fit_to(frame.width as f32, frame.height as f32, available);
+            self.view.fit_to(frame.width as f32, frame.height as f32, available);
             self.pending_fit = false;
         }
 
@@ -298,27 +255,15 @@ impl PumpkinApp {
 
         // Get/update the GPU texture.
         let frame_ptr = Arc::as_ptr(frame) as usize;
-        let Some(texture) = self.image_texture.update(
-            ctx,
-            frame,
-            frame_ptr,
-            self.contrast.vmin,
-            self.contrast.vmax,
-        ) else {
+        let Some(texture) = self.image_texture.update(ctx, frame, frame_ptr, self.contrast.vmin, self.contrast.vmax)
+        else {
             return;
         };
 
         // Compute where the image should be rendered on screen.
         let image_screen_rect = egui::Rect::from_min_size(
-            available.min
-                - egui::Vec2::new(
-                    self.view.offset.x * self.view.zoom,
-                    self.view.offset.y * self.view.zoom,
-                ),
-            egui::Vec2::new(
-                frame.width as f32 * self.view.zoom,
-                frame.height as f32 * self.view.zoom,
-            ),
+            available.min - egui::Vec2::new(self.view.offset.x * self.view.zoom, self.view.offset.y * self.view.zoom),
+            egui::Vec2::new(frame.width as f32 * self.view.zoom, frame.height as f32 * self.view.zoom),
         );
 
         // Clip the drawn image to the viewport area.
@@ -363,14 +308,11 @@ impl eframe::App for PumpkinApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
 
-        SidePanel::left("left_panel")
-            .resizable(true)
-            .default_width(240.0)
-            .show(ctx, |ui| {
-                ScrollArea::vertical().show(ui, |ui| {
-                    self.show_left_panel(ui);
-                });
+        SidePanel::left("left_panel").resizable(true).default_width(240.0).show(ctx, |ui| {
+            ScrollArea::vertical().show(ui, |ui| {
+                self.show_left_panel(ui);
             });
+        });
 
         CentralPanel::default().show(ctx, |ui| {
             self.show_viewport(ctx, ui);
@@ -383,12 +325,7 @@ fn auto_contrast(frame: &Frame) -> (f32, f32) {
     if frame.pixels.is_empty() {
         return (0.0, 65535.0);
     }
-    let mut vals: Vec<u16> = frame
-        .pixels
-        .iter()
-        .copied()
-        .filter(|&v| v < frame.saturation_value)
-        .collect();
+    let mut vals: Vec<u16> = frame.pixels.iter().copied().filter(|&v| v < frame.saturation_value).collect();
 
     if vals.is_empty() {
         return (0.0, frame.saturation_value as f32);

@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use hdf5_metno as hdf5;
 use ndarray::s;
 use std::path::{Path, PathBuf};
@@ -30,10 +30,7 @@ impl Hdf5Series {
     /// `master_path` must be the `*_master.h5` file.  The data files
     /// (`*_data_000001.h5`, …) are expected to be in the same directory.
     pub fn open(master_path: &Path) -> Result<Self> {
-        let master_dir = master_path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .to_path_buf();
+        let master_dir = master_path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
         let master = hdf5::File::open(master_path)
             .with_context(|| format!("Cannot open master file: {}", master_path.display()))?;
@@ -41,16 +38,11 @@ impl Hdf5Series {
         // --- Metadata ---
         let beam_center_x = read_scalar_f64(&master, "/entry/instrument/detector/beam_center_x").ok();
         let beam_center_y = read_scalar_f64(&master, "/entry/instrument/detector/beam_center_y").ok();
-        let detector_distance =
-            read_scalar_f64(&master, "/entry/instrument/detector/detector_distance").ok();
-        let wavelength =
-            read_scalar_f64(&master, "/entry/instrument/beam/incident_wavelength").ok();
-        let pixel_size_x =
-            read_scalar_f64(&master, "/entry/instrument/detector/x_pixel_size").ok();
-        let pixel_size_y =
-            read_scalar_f64(&master, "/entry/instrument/detector/y_pixel_size").ok();
-        let exposure_time =
-            read_scalar_f64(&master, "/entry/instrument/detector/count_time").ok();
+        let detector_distance = read_scalar_f64(&master, "/entry/instrument/detector/detector_distance").ok();
+        let wavelength = read_scalar_f64(&master, "/entry/instrument/beam/incident_wavelength").ok();
+        let pixel_size_x = read_scalar_f64(&master, "/entry/instrument/detector/x_pixel_size").ok();
+        let pixel_size_y = read_scalar_f64(&master, "/entry/instrument/detector/y_pixel_size").ok();
+        let exposure_time = read_scalar_f64(&master, "/entry/instrument/detector/count_time").ok();
 
         let series_metadata = FrameMetadata {
             beam_center_x,
@@ -84,9 +76,7 @@ impl Hdf5Series {
         }
 
         // --- Count data file links under /entry/data ---
-        let data_group = master
-            .group("/entry/data")
-            .context("/entry/data group not found")?;
+        let data_group = master.group("/entry/data").context("/entry/data group not found")?;
         let num_data_files = data_group.len() as usize;
         if num_data_files == 0 {
             bail!("No data files linked in /entry/data");
@@ -95,9 +85,7 @@ impl Hdf5Series {
         // Frames per file: all files have the same count except possibly the last.
         // Infer from shape of the first dataset.
         let frames_per_file = {
-            let first_ds = master
-                .dataset("/entry/data/data_000001")
-                .context("Cannot open /entry/data/data_000001")?;
+            let first_ds = master.dataset("/entry/data/data_000001").context("Cannot open /entry/data/data_000001")?;
             let shape = first_ds.shape();
             if shape.len() != 3 {
                 bail!("Expected 3D dataset, got {} dims", shape.len());
@@ -127,10 +115,7 @@ impl Hdf5Series {
 
         // Path through the master file's external link.
         let ds_path = format!("/entry/data/data_{file_idx:06}");
-        let ds = self
-            .master
-            .dataset(&ds_path)
-            .with_context(|| format!("Cannot open dataset {ds_path}"))?;
+        let ds = self.master.dataset(&ds_path).with_context(|| format!("Cannot open dataset {ds_path}"))?;
 
         // Read a single frame via hyperslab selection.
         // Dataset layout: (nimages, height, width) = (1000, 3264, 3106).
@@ -143,12 +128,8 @@ impl Hdf5Series {
         // Cast i16 → u16.  Negative values (gap/masked pixels: -1) wrap to
         // 65535, which is above saturation_value (32766) and therefore renders
         // as red — the conventional display for bad pixels.
-        let pixels: Vec<u16> = frame_i16
-            .as_slice()
-            .context("Array not contiguous")?
-            .iter()
-            .map(|&v| v as u16)
-            .collect();
+        let pixels: Vec<u16> =
+            frame_i16.as_slice().context("Array not contiguous")?.iter().map(|&v| v as u16).collect();
 
         let mut metadata = self.series_metadata.clone();
         metadata.image_number = Some(index as i64);
@@ -180,9 +161,7 @@ mod tests {
 
     #[test]
     fn test_open_and_read_frame() {
-        let master = std::path::Path::new(
-            "/home/ezepan/github/pumpkin/raw_data/lyzo-mono_9_master.h5",
-        );
+        let master = std::path::Path::new("/home/ezepan/github/pumpkin/raw_data/lyzo-mono_9_master.h5");
         let series = Hdf5Series::open(master).expect("open master");
 
         assert_eq!(series.total_frames, 50000);

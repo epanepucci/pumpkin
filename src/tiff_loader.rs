@@ -1,7 +1,7 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::io::{Cursor, Read, Seek, SeekFrom};
-use tiff::decoder::{Decoder, DecodingResult};
 use tiff::ColorType;
+use tiff::decoder::{Decoder, DecodingResult};
 
 use crate::frame::{Frame, FrameMetadata};
 
@@ -35,13 +35,7 @@ pub fn decode_tiff(data: &[u8]) -> Result<Frame> {
     };
 
     if pixels.len() != (width * height) as usize {
-        bail!(
-            "Pixel count mismatch: got {}, expected {}x{}={}",
-            pixels.len(),
-            width,
-            height,
-            width * height
-        );
+        bail!("Pixel count mismatch: got {}, expected {}x{}={}", pixels.len(), width, height, width * height);
     }
 
     // Determine saturation value from bit depth.
@@ -54,13 +48,7 @@ pub fn decode_tiff(data: &[u8]) -> Result<Frame> {
     // Parse DECTRIS private metadata from the raw bytes.
     let metadata = parse_dectris_metadata(data).unwrap_or_default();
 
-    Ok(Frame {
-        pixels,
-        width,
-        height,
-        saturation_value,
-        metadata,
-    })
+    Ok(Frame { pixels, width, height, saturation_value, metadata })
 }
 
 /// Parse the DECTRIS private IFD tag (0xC7F8) from the raw TIFF bytes.
@@ -82,32 +70,20 @@ fn parse_dectris_metadata(data: &[u8]) -> Result<FrameMetadata> {
     let read_u16 = |cur: &mut Cursor<&[u8]>| -> Result<u16> {
         let mut buf = [0u8; 2];
         cur.read_exact(&mut buf)?;
-        Ok(if little_endian {
-            u16::from_le_bytes(buf)
-        } else {
-            u16::from_be_bytes(buf)
-        })
+        Ok(if little_endian { u16::from_le_bytes(buf) } else { u16::from_be_bytes(buf) })
     };
 
     let read_u32 = |cur: &mut Cursor<&[u8]>| -> Result<u32> {
         let mut buf = [0u8; 4];
         cur.read_exact(&mut buf)?;
-        Ok(if little_endian {
-            u32::from_le_bytes(buf)
-        } else {
-            u32::from_be_bytes(buf)
-        })
+        Ok(if little_endian { u32::from_le_bytes(buf) } else { u32::from_be_bytes(buf) })
     };
 
     let read_f64_at = |cur: &mut Cursor<&[u8]>, offset: u64| -> Result<f64> {
         cur.seek(SeekFrom::Start(offset))?;
         let mut buf = [0u8; 8];
         cur.read_exact(&mut buf)?;
-        Ok(if little_endian {
-            f64::from_le_bytes(buf)
-        } else {
-            f64::from_be_bytes(buf)
-        })
+        Ok(if little_endian { f64::from_le_bytes(buf) } else { f64::from_be_bytes(buf) })
     };
 
     // Verify magic number (42).
@@ -170,10 +146,7 @@ fn parse_dectris_metadata(data: &[u8]) -> Result<FrameMetadata> {
                 // DOUBLE (type 12), count=2: [x, y]
                 if type_ == 12 && count == 2 {
                     let offset = value_or_offset as u64;
-                    if let (Ok(x), Ok(y)) = (
-                        read_f64_at(&mut cur, offset),
-                        read_f64_at(&mut cur, offset + 8),
-                    ) {
+                    if let (Ok(x), Ok(y)) = (read_f64_at(&mut cur, offset), read_f64_at(&mut cur, offset + 8)) {
                         meta.beam_center_x = Some(x);
                         meta.beam_center_y = Some(y);
                     }

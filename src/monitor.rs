@@ -19,17 +19,11 @@ pub struct MonitorConfig {
 
 impl MonitorConfig {
     pub fn monitor_url(&self) -> String {
-        format!(
-            "{}/monitor/api/{}/images/monitor?timeout={}",
-            self.dcu_url, self.api_version, self.poll_timeout_ms
-        )
+        format!("{}/monitor/api/{}/images/monitor?timeout={}", self.dcu_url, self.api_version, self.poll_timeout_ms)
     }
 
     pub fn config_url(&self, param: &str) -> String {
-        format!(
-            "{}/monitor/api/{}/config/{}",
-            self.dcu_url, self.api_version, param
-        )
+        format!("{}/monitor/api/{}/config/{}", self.dcu_url, self.api_version, param)
     }
 }
 
@@ -40,11 +34,7 @@ impl MonitorConfig {
 pub fn enable_monitor(client: &reqwest::blocking::Client, cfg: &MonitorConfig) -> Result<()> {
     let url = cfg.config_url("mode");
     let body = serde_json::json!({ "value": "enabled" });
-    let resp = client
-        .put(&url)
-        .json(&body)
-        .send()
-        .context("PUT monitor mode")?;
+    let resp = client.put(&url).json(&body).send().context("PUT monitor mode")?;
     if !resp.status().is_success() {
         anyhow::bail!("Enable monitor failed: HTTP {}", resp.status());
     }

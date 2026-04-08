@@ -15,10 +15,7 @@ pub struct ViewState {
 
 impl Default for ViewState {
     fn default() -> Self {
-        Self {
-            zoom: 1.0,
-            offset: Vec2::ZERO,
-        }
+        Self { zoom: 1.0, offset: Vec2::ZERO }
     }
 }
 
@@ -48,14 +45,8 @@ impl ViewState {
 
         // Allow panning so at least 64 px of the image is always visible.
         let margin = 64.0;
-        self.offset.x = self.offset.x.clamp(
-            -vw / self.zoom + margin,
-            image_w - margin,
-        );
-        self.offset.y = self.offset.y.clamp(
-            -vh / self.zoom + margin,
-            image_h - margin,
-        );
+        self.offset.x = self.offset.x.clamp(-vw / self.zoom + margin, image_w - margin);
+        self.offset.y = self.offset.y.clamp(-vh / self.zoom + margin, image_h - margin);
         let _ = (img_screen_w, img_screen_h);
     }
 
@@ -96,10 +87,8 @@ pub fn handle_input(view: &mut ViewState, response: &Response, frame: Option<&Ar
     // Zoom with scroll wheel, centred on pointer.
     let scroll = response.ctx.input(|i| i.smooth_scroll_delta.y);
     if scroll != 0.0 {
-        let focal = response
-            .hover_pos()
-            .unwrap_or(response.rect.center());
-        let factor = (scroll * 0.002).exp(); // ~0.2% per scroll unit
+        let focal = response.hover_pos().unwrap_or(response.rect.center());
+        let factor = (scroll * 0.02).exp(); // ~0.2% per scroll unit
         view.zoom_around(focal, response.rect.min, factor);
         changed = true;
     }
@@ -114,32 +103,17 @@ pub fn handle_input(view: &mut ViewState, response: &Response, frame: Option<&Ar
 }
 
 /// Draw overlays on the viewport using egui's Painter.
-pub fn draw_overlays(
-    painter: &Painter,
-    view: &ViewState,
-    viewport: Rect,
-    frame: &Frame,
-    overlays: &OverlaySettings,
-) {
+pub fn draw_overlays(painter: &Painter, view: &ViewState, viewport: Rect, frame: &Frame, overlays: &OverlaySettings) {
     let origin = viewport.min;
 
     // Beam center crosshair.
     if overlays.show_beam_center {
-        if let (Some(cx), Some(cy)) = (
-            frame.metadata.beam_center_x,
-            frame.metadata.beam_center_y,
-        ) {
+        if let (Some(cx), Some(cy)) = (frame.metadata.beam_center_x, frame.metadata.beam_center_y) {
             let center = view.image_to_screen(Pos2::new(cx as f32, cy as f32), origin);
             let arm = 12.0;
             let stroke = egui::Stroke::new(1.5, egui::Color32::YELLOW);
-            painter.line_segment(
-                [center + Vec2::new(-arm, 0.0), center + Vec2::new(arm, 0.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [center + Vec2::new(0.0, -arm), center + Vec2::new(0.0, arm)],
-                stroke,
-            );
+            painter.line_segment([center + Vec2::new(-arm, 0.0), center + Vec2::new(arm, 0.0)], stroke);
+            painter.line_segment([center + Vec2::new(0.0, -arm), center + Vec2::new(0.0, arm)], stroke);
         }
     }
 
@@ -149,7 +123,7 @@ pub fn draw_overlays(
     }
 
     // Pixel value labels when zoomed in enough.
-    if view.zoom >= 8.0 {
+    if view.zoom >= 15.0 {
         draw_pixel_values(painter, view, viewport, frame);
     }
 }
@@ -212,12 +186,7 @@ fn draw_resolution_rings(
 }
 
 /// Draw pixel values for every visible pixel when zoomed in past the threshold.
-fn draw_pixel_values(
-    painter: &Painter,
-    view: &ViewState,
-    viewport: Rect,
-    frame: &Frame,
-) {
+fn draw_pixel_values(painter: &Painter, view: &ViewState, viewport: Rect, frame: &Frame) {
     let origin = viewport.min;
 
     // Compute visible image pixel range.
@@ -235,30 +204,22 @@ fn draw_pixel_values(
         return;
     }
 
-    let font = egui::FontId::monospace(view.zoom * 0.4);
+    let font = egui::FontId::monospace(view.zoom * 0.3);
 
     for py in y0..y1 {
         for px in x0..x1 {
             let value = frame.pixels[(py * frame.width + px) as usize];
-            let cell_center = view.image_to_screen(
-                Pos2::new(px as f32 + 0.5, py as f32 + 0.5),
-                origin,
-            );
+            let cell_center = view.image_to_screen(Pos2::new(px as f32 + 0.5, py as f32 + 0.5), origin);
             if !viewport.contains(cell_center) {
                 continue;
             }
-            let color = if frame.is_saturated(value) {
-                egui::Color32::RED
-            } else {
-                egui::Color32::WHITE
-            };
-            painter.text(
-                cell_center,
-                egui::Align2::CENTER_CENTER,
-                value.to_string(),
-                font.clone(),
-                color,
-            );
+
+            if frame.is_saturated(value) {
+                continue;
+            }
+
+            let color = egui::Color32::GRAY;
+            painter.text(cell_center, egui::Align2::CENTER_CENTER, value.to_string(), font.clone(), color);
         }
     }
 }
