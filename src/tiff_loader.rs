@@ -1,6 +1,5 @@
 use anyhow::{Context, Result, bail};
 use std::io::{Cursor, Read, Seek, SeekFrom};
-use tiff::ColorType;
 use tiff::decoder::{Decoder, DecodingResult};
 
 use crate::frame::{Frame, FrameMetadata};
@@ -26,11 +25,14 @@ pub fn decode_tiff(data: &[u8]) -> Result<Frame> {
     let mut decoder = Decoder::new(cursor).context("TIFF decoder init")?;
 
     let (width, height) = decoder.dimensions().context("TIFF dimensions")?;
-    let color_type = decoder.colortype().context("TIFF color type")?;
 
-    let pixels: Vec<u16> = match decoder.read_image().context("TIFF read_image")? {
-        DecodingResult::U8(buf) => buf.into_iter().map(|v| v as u16).collect(),
-        DecodingResult::U16(buf) => buf,
+    let (pixels, saturation_value): (Vec<u16>, u16) = match decoder.read_image().context("TIFF read_image")? {
+        DecodingResult::U8(buf) => (buf.into_iter().map(|v| v as u16).collect(), u8::MAX as u16),
+        DecodingResult::U16(buf) => (buf, u16::MAX),
+        DecodingResult::U32(buf) => (
+            buf.into_iter().map(|v| v.min(u16::MAX as u32) as u16).collect(),
+            u16::MAX,
+        ),
         other => bail!("Unsupported TIFF pixel format: {:?}", other),
     };
 
@@ -38,15 +40,8 @@ pub fn decode_tiff(data: &[u8]) -> Result<Frame> {
         bail!("Pixel count mismatch: got {}, expected {}x{}={}", pixels.len(), width, height, width * height);
     }
 
-    // Determine saturation value from bit depth.
-    let saturation_value = match color_type {
-        ColorType::Gray(8) => u8::MAX as u16,
-        ColorType::Gray(16) => u16::MAX,
-        _ => u16::MAX,
-    };
-
-    // Parse DECTRIS private metadata from the raw bytes.
-    let metadata = parse_dectris_metadata(data).unwrap_or_default();
+    // Skip DECTRIS private metadata parsing for now.
+    let metadata = FrameMetadata::default();
 
     Ok(Frame { pixels, width, height, saturation_value, metadata })
 }

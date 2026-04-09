@@ -6,7 +6,7 @@ use tokio::sync::watch;
 use crate::frame::Frame;
 use crate::hdf5_loader::Hdf5Series;
 use crate::image_render::ImageTexture;
-use crate::monitor::{MonitorConfig, start_monitor_task};
+use crate::monitor::{MonitorBatch, MonitorConfig, start_monitor_task};
 use crate::viewport::{self, OverlaySettings, ViewState};
 
 /// Tone-mapping controls.
@@ -25,7 +25,7 @@ impl Default for ContrastState {
 
 pub struct PumpkinApp {
     frame: Option<Arc<Frame>>,
-    frame_rx: Option<watch::Receiver<Option<Arc<Frame>>>>,
+    frame_rx: Option<watch::Receiver<Option<MonitorBatch>>>,
 
     image_texture: ImageTexture,
     view: ViewState,
@@ -37,6 +37,11 @@ pub struct PumpkinApp {
 
     dcu_url: String,
     connected: bool,
+
+    /// Pre-fetched monitor frames (browse mode when ≤4, single frame otherwise).
+    monitor_frames: Vec<Arc<Frame>>,
+    monitor_frame_index: usize,
+    monitor_series_id: Option<u64>,
 
     /// Open HDF5 series, if any.
     hdf5_series: Option<Hdf5Series>,
@@ -60,6 +65,9 @@ impl PumpkinApp {
             pending_fit: false,
             dcu_url: "http://localhost".to_string(),
             connected: false,
+            monitor_frames: Vec::new(),
+            monitor_frame_index: 0,
+            monitor_series_id: None,
             hdf5_series: None,
             hdf5_frame_index: 0,
             show_goto_frame: false,
@@ -141,19 +149,42 @@ impl PumpkinApp {
         self.load_hdf5_frame(self.hdf5_frame_index);
     }
 
-    fn on_new_frame(&mut self, frame: Arc<Frame>) {
+    /// Update displayed frame and auto-contrast without touching pending_fit.
+    fn display_frame(&mut self, frame: Arc<Frame>) {
         if self.contrast.auto {
             let (vmin, vmax) = auto_contrast(&frame);
             self.contrast.vmin = vmin;
             self.contrast.vmax = vmax;
         }
         self.frame = Some(frame);
+    }
+
+    fn on_new_frame(&mut self, frame: Arc<Frame>) {
+        self.display_frame(frame);
         self.pending_fit = true;
     }
 
+    fn on_monitor_batch(&mut self, batch: MonitorBatch) {
+        let new_series = Some(batch.series_id) != self.monitor_series_id;
+        self.monitor_series_id = Some(batch.series_id);
+        self.monitor_frames = batch.frames;
+
+        if new_series {
+            // Start at the most recent frame and fit to view.
+            self.monitor_frame_index = self.monitor_frames.len().saturating_sub(1);
+            self.pending_fit = true;
+        } else {
+            // Keep current index, clamped to valid range.
+            self.monitor_frame_index = self.monitor_frame_index.min(self.monitor_frames.len().saturating_sub(1));
+        }
+
+        if let Some(frame) = self.monitor_frames.get(self.monitor_frame_index) {
+            self.display_frame(frame.clone());
+        }
+    }
+
     fn connect(&mut self) {
-        let cfg =
-            MonitorConfig { dcu_url: self.dcu_url.clone(), api_version: "1.8.0".to_string(), poll_timeout_ms: 500 };
+        let cfg = MonitorConfig { dcu_url: self.dcu_url.clone(), api_version: "1.8.0".to_string() };
         self.frame_rx = Some(start_monitor_task(cfg));
         self.connected = true;
     }
@@ -161,6 +192,9 @@ impl PumpkinApp {
     fn disconnect(&mut self) {
         self.frame_rx = None;
         self.connected = false;
+        self.monitor_frames.clear();
+        self.monitor_series_id = None;
+        self.monitor_frame_index = 0;
     }
 
     fn poll_new_frame(&mut self) -> bool {
@@ -170,11 +204,9 @@ impl PumpkinApp {
         if !rx.has_changed().unwrap_or(false) {
             return false;
         }
-        // Clone the Arc out of the watch ref before calling on_new_frame
-        // to satisfy the borrow checker.
-        let maybe_frame = rx.borrow_and_update().clone();
-        if let Some(frame) = maybe_frame {
-            self.on_new_frame(frame);
+        let maybe_batch = rx.borrow_and_update().clone();
+        if let Some(batch) = maybe_batch {
+            self.on_monitor_batch(batch);
             return true;
         }
         false
@@ -281,6 +313,38 @@ impl PumpkinApp {
                 self.load_hdf5_frame(self.hdf5_frame_index);
             }
         }
+
+        // Monitor frame browser — shown when the last series has ≤4 images.
+        if self.monitor_frames.len() > 1 {
+            ui.separator();
+            ui.heading("Frame browser");
+            let total = self.monitor_frames.len();
+            let series_id = self.monitor_series_id.unwrap_or(0);
+            ui.label(format!("Series {series_id} — {total} frames"));
+
+            let old_index = self.monitor_frame_index;
+            ui.add(egui::Slider::new(&mut self.monitor_frame_index, 0..=total.saturating_sub(1)).text("frame"));
+
+            ui.horizontal(|ui| {
+                if ui.button("|◀").clicked() {
+                    self.monitor_frame_index = 0;
+                }
+                if ui.button("◀").clicked() && self.monitor_frame_index > 0 {
+                    self.monitor_frame_index -= 1;
+                }
+                if ui.button("▶").clicked() && self.monitor_frame_index + 1 < total {
+                    self.monitor_frame_index += 1;
+                }
+                if ui.button("▶|").clicked() {
+                    self.monitor_frame_index = total.saturating_sub(1);
+                }
+            });
+
+            if self.monitor_frame_index != old_index {
+                let frame = self.monitor_frames[self.monitor_frame_index].clone();
+                self.display_frame(frame);
+            }
+        }
     }
 
     fn show_viewport(&mut self, ctx: &Context, ui: &mut Ui) {
@@ -385,6 +449,21 @@ impl eframe::App for PumpkinApp {
 
             if self.hdf5_frame_index != old_index {
                 self.load_hdf5_frame(self.hdf5_frame_index);
+            }
+        } else if self.monitor_frames.len() > 1 {
+            let total = self.monitor_frames.len();
+            let old_index = self.monitor_frame_index;
+
+            if ctx.input_mut(|i| i.consume_shortcut(&previous_image_shortcut)) && self.monitor_frame_index > 0 {
+                self.monitor_frame_index -= 1;
+            }
+            if ctx.input_mut(|i| i.consume_shortcut(&next_image_shortcut)) && self.monitor_frame_index + 1 < total {
+                self.monitor_frame_index += 1;
+            }
+
+            if self.monitor_frame_index != old_index {
+                let frame = self.monitor_frames[self.monitor_frame_index].clone();
+                self.display_frame(frame);
             }
         }
 
