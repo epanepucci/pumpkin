@@ -5,7 +5,7 @@ use tokio::sync::watch;
 
 use crate::frame::Frame;
 use crate::hdf5_loader::Hdf5Series;
-use crate::image_render::ImageTexture;
+use crate::image_render::{Colormap, ImageTexture};
 use crate::monitor::{MonitorBatch, MonitorConfig, start_monitor_task};
 use crate::viewport::{self, OverlaySettings, ViewState};
 
@@ -15,11 +15,12 @@ pub struct ContrastState {
     pub vmin: f32,
     pub vmax: f32,
     pub auto: bool,
+    pub colormap: Colormap,
 }
 
 impl Default for ContrastState {
     fn default() -> Self {
-        Self { vmin: 0.0, vmax: 1000.0, auto: true }
+        Self { vmin: 0.0, vmax: 1000.0, auto: true, colormap: Colormap::default() }
     }
 }
 
@@ -36,6 +37,7 @@ pub struct PumpkinApp {
     pending_fit: bool,
 
     dcu_url: String,
+    poll_period_ms: u64,
     connected: bool,
 
     /// Pre-fetched monitor frames (browse mode when ≤4, single frame otherwise).
@@ -54,7 +56,7 @@ pub struct PumpkinApp {
 }
 
 impl PumpkinApp {
-    pub fn new(_cc: &eframe::CreationContext) -> Self {
+    pub fn new(_cc: &eframe::CreationContext, dcu_url: String, poll_period_ms: u64) -> Self {
         Self {
             frame: None,
             frame_rx: None,
@@ -63,7 +65,8 @@ impl PumpkinApp {
             contrast: ContrastState::default(),
             overlays: OverlaySettings::default(),
             pending_fit: false,
-            dcu_url: "http://localhost".to_string(),
+            dcu_url,
+            poll_period_ms,
             connected: false,
             monitor_frames: Vec::new(),
             monitor_frame_index: 0,
@@ -184,7 +187,11 @@ impl PumpkinApp {
     }
 
     fn connect(&mut self) {
-        let cfg = MonitorConfig { dcu_url: self.dcu_url.clone(), api_version: "1.8.0".to_string() };
+        let cfg = MonitorConfig {
+            dcu_url: self.dcu_url.clone(),
+            api_version: "1.8.0".to_string(),
+            poll_period_ms: self.poll_period_ms,
+        };
         self.frame_rx = Some(start_monitor_task(cfg));
         self.connected = true;
     }
@@ -231,6 +238,34 @@ impl PumpkinApp {
         ui.checkbox(&mut self.contrast.auto, "Auto");
         ui.add_enabled(!self.contrast.auto, egui::Slider::new(&mut self.contrast.vmin, 0.0..=65535.0).text("vmin"));
         ui.add_enabled(!self.contrast.auto, egui::Slider::new(&mut self.contrast.vmax, 1.0..=65535.0).text("vmax"));
+        egui::ComboBox::from_label("Colormap")
+            .selected_text(self.contrast.colormap.label())
+            .show_ui(ui, |ui| {
+                for &cmap in Colormap::ALL {
+                    ui.selectable_value(&mut self.contrast.colormap, cmap, cmap.label());
+                }
+            });
+
+        // Colormap preview bar — full panel width, 1 px per sample.
+        let bar_height = 16.0;
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), bar_height), egui::Sense::hover());
+        if ui.is_rect_visible(rect) {
+            let painter = ui.painter();
+            let n = rect.width().ceil() as usize;
+            for i in 0..n {
+                let t = i as f32 / (n.saturating_sub(1)) as f32;
+                let [r, g, b] = self.contrast.colormap.apply(t);
+                painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(rect.left() + i as f32, rect.top()),
+                        egui::pos2(rect.left() + i as f32 + 1.0, rect.bottom()),
+                    ),
+                    0.0,
+                    egui::Color32::from_rgb(r, g, b),
+                );
+            }
+        }
         ui.separator();
 
         ui.heading("Overlays");
@@ -254,9 +289,21 @@ impl PumpkinApp {
                 row!("Beam Y", meta.beam_center_y.map_or("-".into(), |v| format!("{v:.1} px")));
                 row!("Distance", meta.detector_distance.map_or("-".into(), |v| format!("{:.1} mm", v * 1000.0)));
                 row!("Wavelength", meta.wavelength.map_or("-".into(), |v| format!("{v:.4} Å")));
+                row!("Energy", meta.incident_energy.map_or("-".into(), |v| format!("{:.3} keV", v / 1000.0)));
+                row!("Frame time", meta.frame_time.map_or("-".into(), |v| format!("{:.1} ms", v * 1000.0)));
                 row!("Exposure", meta.exposure_time.map_or("-".into(), |v| format!("{v:.4} s")));
+                if let Some(n) = meta.nimages {
+                    row!("N images", n.to_string());
+                }
                 if let Some(n) = meta.image_number {
                     row!("Image #", n.to_string());
+                }
+                if let Some(ref p) = meta.name_pattern {
+                    let name = std::path::Path::new(p)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(p.as_str());
+                    row!("Name", name.to_string());
                 }
             });
         } else {
@@ -373,7 +420,8 @@ impl PumpkinApp {
 
         // Get/update the GPU texture.
         let frame_ptr = Arc::as_ptr(frame) as usize;
-        let Some(texture) = self.image_texture.update(ctx, frame, frame_ptr, self.contrast.vmin, self.contrast.vmax)
+        let Some(texture) =
+            self.image_texture.update(ctx, frame, frame_ptr, self.contrast.vmin, self.contrast.vmax, self.contrast.colormap)
         else {
             return;
         };
