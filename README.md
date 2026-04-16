@@ -1,1 +1,5 @@
-README.md
+# A rust based diffraction viewer
+
+This is a pet project to experiment with rust.
+
+![Pumpkin Main Window](pumpkin-mainwindow.png "Pumpkin Diffraction Viewer")
