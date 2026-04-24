@@ -80,6 +80,7 @@ pub struct ImageTexture {
     handle: Option<TextureHandle>,
     last_vmin: f32,
     last_vmax: f32,
+    last_attenuation: f32,
     last_frame_ptr: usize,
     last_colormap: Colormap,
 }
@@ -90,6 +91,7 @@ impl Default for ImageTexture {
             handle: None,
             last_vmin: f32::NAN,
             last_vmax: f32::NAN,
+            last_attenuation: f32::NAN,
             last_frame_ptr: 0,
             last_colormap: Colormap::Standard,
         }
@@ -107,16 +109,26 @@ impl ImageTexture {
         frame_ptr: usize,
         vmin: f32,
         vmax: f32,
+        attenuation: f32,
         colormap: Colormap,
     ) -> Option<&TextureHandle> {
         let needs_update = frame_ptr != self.last_frame_ptr
             || vmin != self.last_vmin
             || vmax != self.last_vmax
+            || attenuation != self.last_attenuation
             || colormap != self.last_colormap;
 
         if needs_update {
-            let rgba =
-                tone_map(&frame.pixels, frame.width, frame.height, vmin, vmax, frame.saturation_value, colormap);
+            let rgba = tone_map(
+                &frame.pixels,
+                frame.width,
+                frame.height,
+                vmin,
+                vmax,
+                attenuation,
+                frame.saturation_value,
+                colormap,
+            );
             let color_image =
                 ColorImage::from_rgba_unmultiplied([frame.width as usize, frame.height as usize], &rgba);
 
@@ -129,6 +141,7 @@ impl ImageTexture {
 
             self.last_vmin = vmin;
             self.last_vmax = vmax;
+            self.last_attenuation = attenuation;
             self.last_frame_ptr = frame_ptr;
             self.last_colormap = colormap;
         }
@@ -139,7 +152,16 @@ impl ImageTexture {
 
 // --- Tone mapping ---
 
-pub(crate) fn tone_map(pixels: &[u16], _w: u32, _h: u32, vmin: f32, vmax: f32, saturation: u16, colormap: Colormap) -> Vec<u8> {
+pub(crate) fn tone_map(
+    pixels: &[u16],
+    _w: u32,
+    _h: u32,
+    vmin: f32,
+    vmax: f32,
+    attenuation: f32,
+    saturation: u16,
+    colormap: Colormap,
+) -> Vec<u8> {
     let range = (vmax - vmin).max(1.0);
     let mut rgba = vec![0u8; pixels.len() * 4];
 
@@ -149,7 +171,8 @@ pub(crate) fn tone_map(pixels: &[u16], _w: u32, _h: u32, vmin: f32, vmax: f32, s
         } else {
             let t = ((v as f32 - vmin) / range).clamp(0.0, 1.0);
             let [r, g, b] = apply_colormap(t, colormap);
-            chunk.copy_from_slice(&[r, g, b, 255]);
+            let att = |c: u8| -> u8 { ((c as f32 / 255.0).powf(attenuation) * 255.0).round() as u8 };
+            chunk.copy_from_slice(&[att(r), att(g), att(b), 255]);
         }
     });
 

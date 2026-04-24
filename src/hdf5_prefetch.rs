@@ -15,6 +15,7 @@ struct Request {
     index: usize,
     vmin: f32,
     vmax: f32,
+    attenuation: f32,
     colormap: Colormap,
 }
 
@@ -57,11 +58,11 @@ impl HDF5Prefetcher {
     }
 
     /// Request background load+tone-map for `index` if not already cached or in-flight.
-    pub fn request(&mut self, index: usize, vmin: f32, vmax: f32, colormap: Colormap) {
+    pub fn request(&mut self, index: usize, vmin: f32, vmax: f32, attenuation: f32, colormap: Colormap) {
         if self.cached.contains_key(&index) || self.in_flight.contains(&index) {
             return;
         }
-        let req = Request { generation: self.generation, index, vmin, vmax, colormap };
+        let req = Request { generation: self.generation, index, vmin, vmax, attenuation, colormap };
         if self.req_tx.try_send(req).is_ok() {
             self.in_flight.insert(index);
         }
@@ -124,6 +125,7 @@ fn reader_thread(
                     frame.height,
                     req.vmin,
                     req.vmax,
+                    req.attenuation,
                     saturation,
                     req.colormap,
                 );

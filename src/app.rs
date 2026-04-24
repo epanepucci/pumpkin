@@ -18,11 +18,14 @@ pub struct ContrastState {
     pub vmax: f32,
     pub auto: bool,
     pub colormap: Colormap,
+    /// Power-law exponent applied after linear normalisation: t' = t^attenuation.
+    /// 1.0 = linear (no change); >1.0 darkens background, preserves bright peaks.
+    pub attenuation: f32,
 }
 
 impl Default for ContrastState {
     fn default() -> Self {
-        Self { vmin: 0.0, vmax: 1000.0, auto: true, colormap: Colormap::Inferno }
+        Self { vmin: 0.0, vmax: 1000.0, auto: true, colormap: Colormap::Inferno, attenuation: 1.0 }
     }
 }
 
@@ -58,7 +61,7 @@ pub struct PumpkinApp {
     /// Background prefetcher: loads + tone-maps neighboring frames into VRAM.
     hdf5_prefetcher: Option<HDF5Prefetcher>,
     /// Contrast params last used to schedule prefetch requests; invalidate on change.
-    prefetch_contrast: (f32, f32, Colormap),
+    prefetch_contrast: (f32, f32, f32, Colormap),
 
     // goto a given frame by number
     show_goto_frame: bool,
@@ -93,7 +96,7 @@ impl PumpkinApp {
             hdf5_master_path: None,
             hdf5_frame_index: 0,
             hdf5_prefetcher: None,
-            prefetch_contrast: (f32::NAN, f32::NAN, Colormap::Inferno),
+            prefetch_contrast: (f32::NAN, f32::NAN, f32::NAN, Colormap::Inferno),
             show_goto_frame: false,
             goto_frame_input: "0".to_string(),
         };
@@ -140,7 +143,7 @@ impl PumpkinApp {
         if let Some(ref series) = self.hdf5_series {
             match series.load_frame(index) {
                 Ok(frame) => self.on_new_frame(Arc::new(frame)),
-                Err(e) => eprintln!("HDF5 frame {index}: {e}"),
+                Err(e) => eprintln!("HDF5 frame {index}: {e:#}"),
             }
         }
         self.schedule_hdf5_prefetch();
@@ -154,18 +157,19 @@ impl PumpkinApp {
         let cur = self.hdf5_frame_index;
         let vmin = self.contrast.vmin;
         let vmax = self.contrast.vmax;
+        let attenuation = self.contrast.attenuation;
         let colormap = self.contrast.colormap;
 
         for offset in 0..=3usize {
             if cur + offset < total {
-                prefetcher.request(cur + offset, vmin, vmax, colormap);
+                prefetcher.request(cur + offset, vmin, vmax, attenuation, colormap);
             }
             if offset > 0 && cur >= offset {
-                prefetcher.request(cur - offset, vmin, vmax, colormap);
+                prefetcher.request(cur - offset, vmin, vmax, attenuation, colormap);
             }
         }
         prefetcher.evict_distant(cur);
-        self.prefetch_contrast = (vmin, vmax, colormap);
+        self.prefetch_contrast = (vmin, vmax, attenuation, colormap);
     }
 
     pub fn goto_frame(&mut self, ctx: &egui::Context) {
@@ -250,6 +254,7 @@ impl PumpkinApp {
             new_series,
             self.contrast.vmin,
             self.contrast.vmax,
+            self.contrast.attenuation,
             self.contrast.colormap,
         );
 
@@ -309,8 +314,13 @@ impl PumpkinApp {
 
         ui.heading("Contrast");
         ui.checkbox(&mut self.contrast.auto, "Auto");
-        ui.add_enabled(!self.contrast.auto, egui::Slider::new(&mut self.contrast.vmin, 0.0..=65535.0).text("vmin"));
-        ui.add_enabled(!self.contrast.auto, egui::Slider::new(&mut self.contrast.vmax, 1.0..=65535.0).text("vmax"));
+        ui.add_enabled(!self.contrast.auto, egui::Slider::new(&mut self.contrast.vmin, 0.0..=65535.0).text("Background"));
+        ui.add_enabled(!self.contrast.auto, egui::Slider::new(&mut self.contrast.vmax, 1.0..=65535.0).text("Foreground"));
+        ui.add(
+            egui::Slider::new(&mut self.contrast.attenuation, 1.0..=10.0)
+                .step_by(0.1)
+                .text("Gamma"),
+        );
         egui::ComboBox::from_label("Colormap")
             .selected_text(self.contrast.colormap.label())
             .show_ui(ui, |ui| {
@@ -535,6 +545,7 @@ impl PumpkinApp {
                     frame_ptr,
                     self.contrast.vmin,
                     self.contrast.vmax,
+                    self.contrast.attenuation,
                     self.contrast.colormap,
                 ) else {
                     return;
@@ -643,7 +654,7 @@ impl eframe::App for PumpkinApp {
         }
 
         // Invalidate prefetcher caches when contrast settings change.
-        let cur_contrast = (self.contrast.vmin, self.contrast.vmax, self.contrast.colormap);
+        let cur_contrast = (self.contrast.vmin, self.contrast.vmax, self.contrast.attenuation, self.contrast.colormap);
         if cur_contrast != self.prefetch_contrast {
             if self.hdf5_series.is_some() {
                 if let Some(ref mut prefetcher) = self.hdf5_prefetcher {
@@ -659,6 +670,7 @@ impl eframe::App for PumpkinApp {
                     cur_contrast.0,
                     cur_contrast.1,
                     cur_contrast.2,
+                    cur_contrast.3,
                 );
             }
             // Must update after the block; NaN != NaN would re-trigger every frame otherwise.
@@ -686,7 +698,8 @@ impl eframe::App for PumpkinApp {
     }
 }
 
-/// Compute vmin/vmax as the 1st and 99th percentile of non-saturated pixels.
+/// Compute vmin as the 1st percentile and vmax as 10% of the maximum
+/// non-saturated pixel value.
 fn auto_contrast(frame: &Frame) -> (f32, f32) {
     if frame.pixels.is_empty() {
         return (0.0, 65535.0);
@@ -700,6 +713,7 @@ fn auto_contrast(frame: &Frame) -> (f32, f32) {
     vals.sort_unstable();
 
     let p01 = vals[(vals.len() as f32 * 0.01) as usize];
-    let p99 = vals[((vals.len() as f32 * 0.99) as usize).min(vals.len() - 1)];
-    (p01 as f32, (p99 as f32).max(p01 as f32 + 1.0))
+    let max_val = *vals.last().unwrap() as f32;
+    let vmax = (max_val * 0.0010).max(p01 as f32 + 1.0);
+    (p01 as f32, vmax)
 }

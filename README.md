@@ -2,4 +2,4 @@
 
 This is a pet project to experiment with rust.
 
-![Pumpkin Main Window](pumpkin-mainwindow.png "Pumpkin Diffraction Viewer")
+![Pumpkin Main Window](docs/pumpkin-mainwindow.png "Pumpkin Diffraction Viewer")

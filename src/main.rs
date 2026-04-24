@@ -36,7 +36,55 @@ struct Args {
     config: Option<PathBuf>,
 }
 
+/// Ensure HDF5_PLUGIN_PATH points to an existing directory.
+///
+/// The bundled static HDF5 (hdf5-src) bakes in the Cargo build output dir as
+/// its default plugin path.  That directory only exists during `cargo build`
+/// and is missing at runtime, causing H5Dread to fail with "can't open
+/// directory".  Setting HDF5_PLUGIN_PATH to any real directory suppresses
+/// that error.  We prefer a directory that actually contains the bitshuffle
+/// plugin (filter 32008, used by DECTRIS EIGER by default) so those files
+/// open without extra configuration.
+fn setup_hdf5_plugin_path() {
+    if std::env::var("HDF5_PLUGIN_PATH").is_ok() {
+        return; // already set by the user — respect it
+    }
+
+    let plugin_filenames = ["libH5Zbshuf.so", "libhdf5_bshuf.so", "libh5bshuf.so"];
+    let mut candidates = vec![
+        "/usr/lib/x86_64-linux-gnu/hdf5/serial/plugins".to_string(),
+        "/usr/lib/x86_64-linux-gnu/hdf5/plugins".to_string(),
+        "/usr/lib64/hdf5/plugins".to_string(),
+        "/usr/local/hdf5/lib/plugin".to_string(),
+    ];
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(format!("{home}/.hdf5/lib/plugin"));
+    }
+
+    // Prefer a directory that has the bitshuffle plugin.
+    for dir in &candidates {
+        let dir_path = std::path::Path::new(dir.as_str());
+        if plugin_filenames.iter().any(|name| dir_path.join(name).exists()) {
+            // Safety: called before any threads are spawned.
+            unsafe { std::env::set_var("HDF5_PLUGIN_PATH", dir) };
+            eprintln!("HDF5_PLUGIN_PATH set to: {dir}");
+            return;
+        }
+    }
+
+    // No bitshuffle plugin found.  Still need to point HDF5 at a directory
+    // that exists — otherwise the bundled HDF5's baked-in (missing) path
+    // causes H5Dread to fail entirely.  Use ~/.hdf5/lib/plugin (HDF5's own
+    // standard user plugin dir), creating it if necessary.
+    let fallback = std::env::var("HOME")
+        .map(|h| format!("{h}/.hdf5/lib/plugin"))
+        .unwrap_or_else(|_| "/tmp".to_string());
+    std::fs::create_dir_all(&fallback).ok();
+    unsafe { std::env::set_var("HDF5_PLUGIN_PATH", &fallback) };
+}
+
 fn main() -> anyhow::Result<()> {
+    setup_hdf5_plugin_path();
     let args = Args::parse();
 
     // Load config: explicit path → error if missing; default path → silent skip.

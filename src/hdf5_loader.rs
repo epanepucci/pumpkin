@@ -117,30 +117,62 @@ impl Hdf5Series {
         let ds_path = format!("/entry/data/data_{file_idx:06}");
         let ds = self.master.dataset(&ds_path).with_context(|| format!("Cannot open dataset {ds_path}"))?;
 
-        // Read a single frame via hyperslab selection.
-        // Dataset layout: (nimages, height, width) = (1000, 3264, 3106).
-        let frame_i16: ndarray::Array2<i16> = ds
-            .read_slice_2d(s![within_idx, .., ..])
-            .with_context(|| format!("Hyperslab read failed for frame {index}"))?;
+        let shape = ds.shape();
+        if shape.len() != 3 {
+            bail!("Expected 3D dataset in {ds_path}, got {} dims", shape.len());
+        }
+        let height = shape[1] as u32;
+        let width = shape[2] as u32;
 
-        let (height, width) = frame_i16.dim();
-
-        // Cast i16 → u16.  Negative values (gap/masked pixels: -1) wrap to
-        // 65535, which is above saturation_value (32766) and therefore renders
-        // as red — the conventional display for bad pixels.
-        let pixels: Vec<u16> =
-            frame_i16.as_slice().context("Array not contiguous")?.iter().map(|&v| v as u16).collect();
+        let pixels = read_pixels_auto(&ds, within_idx)
+            .with_context(|| format!("Cannot read frame {index} from {ds_path}"))?;
 
         let mut metadata = self.series_metadata.clone();
         metadata.image_number = Some(index as i64);
 
-        Ok(Frame {
-            pixels,
-            width: width as u32,
-            height: height as u32,
-            saturation_value: self.saturation_value,
-            metadata,
-        })
+        Ok(Frame { pixels, width, height, saturation_value: self.saturation_value, metadata })
+    }
+}
+
+/// Read one 2-D frame from a 3-D dataset, trying common DECTRIS pixel dtypes.
+///
+/// EIGER 1 stores i16 (gap/masked pixels = −1, wraps to 65535 as u16).
+/// EIGER 2 stores u32 (large dynamic range); some variants use u16 or i32.
+/// HDF5 performs the conversion natively; we try each type and return the
+/// first that succeeds.  On total failure we surface the i16 error because
+/// it is the most likely to contain the real root cause (e.g., missing
+/// bitshuffle filter, unexpected chunk layout).
+fn read_pixels_auto(ds: &hdf5::Dataset, within_idx: usize) -> Result<Vec<u16>> {
+    // Print dtype size before touching the read path so we always get this info.
+    let dtype_size = ds.dtype().map(|dt| dt.size()).unwrap_or(0);
+    eprintln!("  [hdf5] dtype_size={dtype_size}B  frame_in_chunk={within_idx}");
+
+    // i16 — EIGER 1 (most common)
+    match ds.read_slice_2d::<i16, _>(s![within_idx, .., ..]) {
+        Ok(arr) => {
+            return Ok(arr.as_slice().context("array not contiguous")?.iter().map(|&v| v as u16).collect());
+        }
+        Err(e_i16) => {
+            // Print IMMEDIATELY — subsequent HDF5 calls may clear the error stack.
+            eprintln!("  [hdf5] i16 read failed: {:?}", e_i16);
+
+            // u32 — EIGER 2
+            if let Ok(arr) = ds.read_slice_2d::<u32, _>(s![within_idx, .., ..]) {
+                return Ok(arr.as_slice().context("array not contiguous")?.iter()
+                    .map(|&v| v.min(u16::MAX as u32) as u16)
+                    .collect());
+            }
+            // u16
+            if let Ok(arr) = ds.read_slice_2d::<u16, _>(s![within_idx, .., ..]) {
+                return Ok(arr.as_slice().context("array not contiguous")?.iter().copied().collect());
+            }
+            // i32
+            if let Ok(arr) = ds.read_slice_2d::<i32, _>(s![within_idx, .., ..]) {
+                return Ok(arr.as_slice().context("array not contiguous")?.iter().map(|&v| v as u16).collect());
+            }
+
+            Err(anyhow::anyhow!("dtype_size={dtype_size}B, read failed as i16/u32/u16/i32; see stderr for HDF5 error"))
+        }
     }
 }
 

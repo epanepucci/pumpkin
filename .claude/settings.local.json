@@ -14,7 +14,20 @@
       "Bash(h5dump -d /entry/instrument/detector/bit_depth_image /home/ezepan/github/pumpkin/raw_data/lyzo-mono_9_master.h5)",
       "Bash(h5dump -d /entry/instrument/detector/count_time /home/ezepan/github/pumpkin/raw_data/lyzo-mono_9_master.h5)",
       "Bash(h5dump:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(ldd target/release/pumpkin)",
+      "Bash(objdump -T target/release/pumpkin)",
+      "Bash(awk '/GLIBC/{print $NF}')",
+      "Bash(awk '/GLIBC/{match\\($NF, /GLIBC_\\([0-9.]+\\)/, a\\); print a[1]}')",
+      "Bash(nm -D target/release/pumpkin)",
+      "Bash(chmod +x *)",
+      "Bash(docker build *)",
+      "Bash(docker create *)",
+      "Bash(docker cp *)",
+      "Bash(docker rm *)",
+      "Bash(nm -D pumpkin-rocky8)",
+      "Bash(ldd pumpkin-rocky8 *)",
+      "Bash(awk '{print $1}')"
     ]
   }
 }

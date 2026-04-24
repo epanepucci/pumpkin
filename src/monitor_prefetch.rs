@@ -43,6 +43,7 @@ impl MonitorPrefetcher {
         new_series: bool,
         vmin: f32,
         vmax: f32,
+        attenuation: f32,
         colormap: Colormap,
     ) {
         if new_series {
@@ -65,6 +66,7 @@ impl MonitorPrefetcher {
                     frame.height,
                     vmin,
                     vmax,
+                    attenuation,
                     frame.saturation_value,
                     colormap,
                 );
