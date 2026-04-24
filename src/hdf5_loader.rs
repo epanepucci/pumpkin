@@ -145,7 +145,6 @@ impl Hdf5Series {
 fn read_pixels_auto(ds: &hdf5::Dataset, within_idx: usize) -> Result<Vec<u16>> {
     // Print dtype size before touching the read path so we always get this info.
     let dtype_size = ds.dtype().map(|dt| dt.size()).unwrap_or(0);
-    eprintln!("  [hdf5] dtype_size={dtype_size}B  frame_in_chunk={within_idx}");
 
     // i16 — EIGER 1 (most common)
     match ds.read_slice_2d::<i16, _>(s![within_idx, .., ..]) {

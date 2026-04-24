@@ -80,7 +80,7 @@ pub struct ImageTexture {
     handle: Option<TextureHandle>,
     last_vmin: f32,
     last_vmax: f32,
-    last_attenuation: f32,
+    last_gamma_correction: f32,
     last_frame_ptr: usize,
     last_colormap: Colormap,
 }
@@ -91,7 +91,7 @@ impl Default for ImageTexture {
             handle: None,
             last_vmin: f32::NAN,
             last_vmax: f32::NAN,
-            last_attenuation: f32::NAN,
+            last_gamma_correction: f32::NAN,
             last_frame_ptr: 0,
             last_colormap: Colormap::Standard,
         }
@@ -109,13 +109,13 @@ impl ImageTexture {
         frame_ptr: usize,
         vmin: f32,
         vmax: f32,
-        attenuation: f32,
+        gamma_correction: f32,
         colormap: Colormap,
     ) -> Option<&TextureHandle> {
         let needs_update = frame_ptr != self.last_frame_ptr
             || vmin != self.last_vmin
             || vmax != self.last_vmax
-            || attenuation != self.last_attenuation
+            || gamma_correction != self.last_gamma_correction
             || colormap != self.last_colormap;
 
         if needs_update {
@@ -125,7 +125,7 @@ impl ImageTexture {
                 frame.height,
                 vmin,
                 vmax,
-                attenuation,
+                gamma_correction,
                 frame.saturation_value,
                 colormap,
             );
@@ -141,7 +141,7 @@ impl ImageTexture {
 
             self.last_vmin = vmin;
             self.last_vmax = vmax;
-            self.last_attenuation = attenuation;
+            self.last_gamma_correction = gamma_correction;
             self.last_frame_ptr = frame_ptr;
             self.last_colormap = colormap;
         }
@@ -158,7 +158,7 @@ pub(crate) fn tone_map(
     _h: u32,
     vmin: f32,
     vmax: f32,
-    attenuation: f32,
+    gamma_correction: f32,
     saturation: u16,
     colormap: Colormap,
 ) -> Vec<u8> {
@@ -171,7 +171,7 @@ pub(crate) fn tone_map(
         } else {
             let t = ((v as f32 - vmin) / range).clamp(0.0, 1.0);
             let [r, g, b] = apply_colormap(t, colormap);
-            let att = |c: u8| -> u8 { ((c as f32 / 255.0).powf(attenuation) * 255.0).round() as u8 };
+            let att = |c: u8| -> u8 { ((c as f32 / 255.0).powf(gamma_correction) * 255.0).round() as u8 };
             chunk.copy_from_slice(&[att(r), att(g), att(b), 255]);
         }
     });

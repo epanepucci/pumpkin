@@ -70,6 +70,16 @@ impl ViewState {
             -(viewport.height() / self.zoom - image_h) * 0.5,
         );
     }
+
+    /// Zoom to 1:1, centered on the current viewport center.
+    pub fn zoom_to_one(&mut self, viewport: Rect) {
+        let focal = viewport.center();
+        let viewport_origin = viewport.min;
+        let img_focal = self.screen_to_image(focal, viewport_origin);
+        self.zoom = 1.0;
+        self.offset.x = img_focal.x - (focal.x - viewport_origin.x) / self.zoom;
+        self.offset.y = img_focal.y - (focal.y - viewport_origin.y) / self.zoom;
+    }
 }
 
 /// Handle pan and zoom input within the viewport rect. Returns true if view changed.
@@ -210,7 +220,7 @@ fn draw_pixel_values(painter: &Painter, view: &ViewState, viewport: Rect, frame:
         return;
     }
 
-    let font = egui::FontId::monospace(view.zoom * 0.3);
+    let font = egui::FontId::proportional(view.zoom * 0.3);
 
     for py in y0..y1 {
         for px in x0..x1 {

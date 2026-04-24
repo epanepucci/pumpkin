@@ -18,14 +18,14 @@ pub struct ContrastState {
     pub vmax: f32,
     pub auto: bool,
     pub colormap: Colormap,
-    /// Power-law exponent applied after linear normalisation: t' = t^attenuation.
+    /// Power-law exponent applied after linear normalisation: t' = t^gamma_correction.
     /// 1.0 = linear (no change); >1.0 darkens background, preserves bright peaks.
-    pub attenuation: f32,
+    pub gamma_correction: f32,
 }
 
 impl Default for ContrastState {
     fn default() -> Self {
-        Self { vmin: 0.0, vmax: 1000.0, auto: true, colormap: Colormap::Inferno, attenuation: 1.0 }
+        Self { vmin: 0.0, vmax: 1000.0, auto: true, colormap: Colormap::Inferno, gamma_correction: 1.0 }
     }
 }
 
@@ -40,6 +40,8 @@ pub struct PumpkinApp {
 
     /// Trigger a fit-to-view on the next frame.
     pending_fit: bool,
+    /// Last seen viewport rect, used for zoom buttons in the side panel.
+    last_viewport_rect: egui::Rect,
 
     dcu_url: String,
     poll_period_ms: u64,
@@ -66,9 +68,47 @@ pub struct PumpkinApp {
     // goto a given frame by number
     show_goto_frame: bool,
     goto_frame_input: String,
+
+    show_help: bool,
+
+    /// Last folder used to open a file.
+    last_location: Option<std::path::PathBuf>,
 }
 
 impl PumpkinApp {
+    fn last_location_path() -> Option<std::path::PathBuf> {
+        std::env::var_os("HOME").map(|h| {
+            std::path::PathBuf::from(h)
+                .join(".config")
+                .join("pumpkin")
+                .join("last_location.txt")
+        })
+    }
+
+    fn load_last_location() -> Option<std::path::PathBuf> {
+        let path = Self::last_location_path()?;
+        if path.exists() {
+            let s = std::fs::read_to_string(&path).ok()?;
+            let p = std::path::PathBuf::from(s.trim());
+            if p.exists() {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    fn save_last_location(&self) {
+        let Some(ref loc) = self.last_location else { return };
+        let Some(path) = Self::last_location_path() else { return };
+
+        // Ensure parent directory exists.
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        let _ = std::fs::write(&path, loc.to_string_lossy().as_bytes());
+    }
+
     pub fn new(
         _cc: &eframe::CreationContext,
         dcu_url: String,
@@ -85,6 +125,7 @@ impl PumpkinApp {
             contrast,
             overlays,
             pending_fit: false,
+            last_viewport_rect: egui::Rect::NOTHING,
             dcu_url,
             poll_period_ms,
             connected: false,
@@ -99,18 +140,13 @@ impl PumpkinApp {
             prefetch_contrast: (f32::NAN, f32::NAN, f32::NAN, Colormap::Inferno),
             show_goto_frame: false,
             goto_frame_input: "0".to_string(),
+            show_help: false,
+            last_location: Self::load_last_location(),
         };
         if auto_connect {
             app.connect();
         }
         app
-    }
-
-    pub fn load_tiff_file(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
-        let data = std::fs::read(path)?;
-        let frame = crate::tiff_loader::decode_tiff(&data)?;
-        self.on_new_frame(Arc::new(frame));
-        Ok(())
     }
 
     pub fn load_hdf5_master(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
@@ -157,19 +193,19 @@ impl PumpkinApp {
         let cur = self.hdf5_frame_index;
         let vmin = self.contrast.vmin;
         let vmax = self.contrast.vmax;
-        let attenuation = self.contrast.attenuation;
+        let gamma_correction = self.contrast.gamma_correction;
         let colormap = self.contrast.colormap;
 
         for offset in 0..=3usize {
             if cur + offset < total {
-                prefetcher.request(cur + offset, vmin, vmax, attenuation, colormap);
+                prefetcher.request(cur + offset, vmin, vmax, gamma_correction, colormap);
             }
             if offset > 0 && cur >= offset {
-                prefetcher.request(cur - offset, vmin, vmax, attenuation, colormap);
+                prefetcher.request(cur - offset, vmin, vmax, gamma_correction, colormap);
             }
         }
         prefetcher.evict_distant(cur);
-        self.prefetch_contrast = (vmin, vmax, attenuation, colormap);
+        self.prefetch_contrast = (vmin, vmax, gamma_correction, colormap);
     }
 
     pub fn goto_frame(&mut self, ctx: &egui::Context) {
@@ -219,6 +255,53 @@ impl PumpkinApp {
         self.load_hdf5_frame(frame);
     }
 
+    pub fn open_hdf5_dialog(&mut self) {
+        let mut dialog = rfd::FileDialog::new().add_filter("HDF5 master", &["h5"]);
+        if let Some(ref loc) = self.last_location {
+            dialog = dialog.set_directory(loc);
+        }
+
+        if let Some(path) = dialog.pick_file() {
+            if let Some(parent) = path.parent() {
+                self.last_location = Some(parent.to_path_buf());
+                self.save_last_location();
+            }
+            if let Err(e) = self.load_hdf5_master(&path) {
+                eprintln!("Failed to open {}: {e}", path.display());
+            }
+        }
+    }
+
+    pub fn show_help_window(&mut self, ctx: &Context) {
+        if !self.show_help {
+            return;
+        }
+
+        egui::Window::new("Help")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.heading("Keyboard Shortcuts");
+                egui::Grid::new("help_grid").num_columns(2).spacing([20.0, 8.0]).show(ui, |ui| {
+                    ui.label("0"); ui.label("Fit image to view"); ui.end_row();
+                    ui.label("1"); ui.label("Zoom to 1:1"); ui.end_row();
+                    ui.label("Left / Right"); ui.label("Previous / Next frame"); ui.end_row();
+                    ui.label("Ctrl+O"); ui.label("Open HDF5 master"); ui.end_row();
+                    ui.label("Ctrl+G"); ui.label("Go to frame number"); ui.end_row();
+                    ui.label("Ctrl+Q"); ui.label("Quit"); ui.end_row();
+                    ui.label("?"); ui.label("Show this help"); ui.end_row();
+                });
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Close").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        self.show_help = false;
+                    }
+                });
+            });
+    }
+
     /// Update displayed frame and auto-contrast without touching pending_fit.
     fn display_frame(&mut self, frame: Arc<Frame>) {
         if self.contrast.auto {
@@ -254,7 +337,7 @@ impl PumpkinApp {
             new_series,
             self.contrast.vmin,
             self.contrast.vmax,
-            self.contrast.attenuation,
+            self.contrast.gamma_correction,
             self.contrast.colormap,
         );
 
@@ -314,10 +397,19 @@ impl PumpkinApp {
 
         ui.heading("Contrast");
         ui.checkbox(&mut self.contrast.auto, "Auto");
-        ui.add_enabled(!self.contrast.auto, egui::Slider::new(&mut self.contrast.vmin, 0.0..=65535.0).text("Background"));
-        ui.add_enabled(!self.contrast.auto, egui::Slider::new(&mut self.contrast.vmax, 1.0..=65535.0).text("Foreground"));
+
+        let frame_max = self.frame.as_ref().map(|f| f.saturation_value as f32).unwrap_or(65535.0);
+        let vmin_max = (self.contrast.vmax - 10.0).max(0.0);
+        ui.add_enabled(
+            !self.contrast.auto,
+            egui::Slider::new(&mut self.contrast.vmin, 0.0..=vmin_max).text("Background"),
+        );
+        ui.add_enabled(
+            !self.contrast.auto,
+            egui::Slider::new(&mut self.contrast.vmax, self.contrast.vmin..=frame_max).text("Foreground"),
+        );
         ui.add(
-            egui::Slider::new(&mut self.contrast.attenuation, 1.0..=10.0)
+            egui::Slider::new(&mut self.contrast.gamma_correction, 1.0..=10.0)
                 .step_by(0.1)
                 .text("Gamma"),
         );
@@ -416,21 +508,28 @@ impl PumpkinApp {
         }
         ui.separator();
 
+        ui.heading("Viewport");
+        ui.add_enabled_ui(self.frame.is_some() && self.last_viewport_rect.is_positive(), |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Fit").on_hover_text("Fit image to viewport (0)").clicked() {
+                    if let Some(ref frame) = self.frame {
+                        self.view.fit_to(frame.width as f32, frame.height as f32, self.last_viewport_rect);
+                    }
+                }
+                if ui.button("1:1").on_hover_text("Zoom to 1:1 (1)").clicked() {
+                    self.view.zoom_to_one(self.last_viewport_rect);
+                }
+            });
+        });
+        if self.frame.is_some() {
+            ui.label(format!("Zoom: {:.2}×", self.view.zoom));
+        }
+        ui.separator();
+
         ui.heading("Open file");
         ui.horizontal(|ui| {
-            if ui.button("Open TIFF…").clicked() {
-                if let Some(path) = rfd::FileDialog::new().add_filter("TIFF", &["tif", "tiff"]).pick_file() {
-                    if let Err(e) = self.load_tiff_file(&path) {
-                        eprintln!("Failed to load {}: {e}", path.display());
-                    }
-                }
-            }
-            if ui.button("Open HDF5…").clicked() {
-                if let Some(path) = rfd::FileDialog::new().add_filter("HDF5 master", &["h5"]).pick_file() {
-                    if let Err(e) = self.load_hdf5_master(&path) {
-                        eprintln!("Failed to open {}: {e}", path.display());
-                    }
-                }
+            if ui.button("Open HDF5…").on_hover_text("Open HDF5 master file (Ctrl+O)").clicked() {
+                self.open_hdf5_dialog();
             }
         });
 
@@ -497,10 +596,24 @@ impl PumpkinApp {
                 self.display_frame(frame);
             }
         }
+
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.link("Show Shortcuts (?)").clicked() {
+                        self.show_help = true;
+                    }
+                });
+            });
+            ui.separator();
+        });
     }
 
     fn show_viewport(&mut self, ctx: &Context, ui: &mut Ui) {
         let available = ui.available_rect_before_wrap();
+        self.last_viewport_rect = available;
         let response = ui.allocate_rect(available, egui::Sense::click_and_drag());
 
         let Some(ref frame) = self.frame.clone() else {
@@ -545,7 +658,7 @@ impl PumpkinApp {
                     frame_ptr,
                     self.contrast.vmin,
                     self.contrast.vmax,
-                    self.contrast.attenuation,
+                    self.contrast.gamma_correction,
                     self.contrast.colormap,
                 ) else {
                     return;
@@ -597,10 +710,39 @@ impl eframe::App for PumpkinApp {
         let next_image_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::ArrowRight);
         let previous_image_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::ArrowLeft);
         let goto_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::G);
+        let open_hdf5_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
+        let fit_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Num0);
+        let zoom11_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Num1);
+        let help_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Questionmark);
+
+        if ctx.input_mut(|i| i.consume_shortcut(&help_shortcut)) {
+            self.show_help = !self.show_help;
+        }
+
+        if self.show_help {
+            self.show_help_window(ctx);
+        }
 
         if ctx.input_mut(|i| i.consume_shortcut(&goto_shortcut)) {
+            self.show_help = false;
             self.show_goto_frame = true;
             self.goto_frame_input.clear();
+        }
+
+        if ctx.input_mut(|i| i.consume_shortcut(&open_hdf5_shortcut)) {
+            self.open_hdf5_dialog();
+        }
+
+        if ctx.input_mut(|i| i.consume_shortcut(&fit_shortcut)) {
+            if let Some(ref frame) = self.frame {
+                self.view.fit_to(frame.width as f32, frame.height as f32, self.last_viewport_rect);
+            }
+        }
+
+        if ctx.input_mut(|i| i.consume_shortcut(&zoom11_shortcut)) {
+            if self.frame.is_some() && self.last_viewport_rect.is_positive() {
+                self.view.zoom_to_one(self.last_viewport_rect);
+            }
         }
 
         if self.show_goto_frame {
@@ -654,7 +796,7 @@ impl eframe::App for PumpkinApp {
         }
 
         // Invalidate prefetcher caches when contrast settings change.
-        let cur_contrast = (self.contrast.vmin, self.contrast.vmax, self.contrast.attenuation, self.contrast.colormap);
+        let cur_contrast = (self.contrast.vmin, self.contrast.vmax, self.contrast.gamma_correction, self.contrast.colormap);
         if cur_contrast != self.prefetch_contrast {
             if self.hdf5_series.is_some() {
                 if let Some(ref mut prefetcher) = self.hdf5_prefetcher {

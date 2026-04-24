@@ -30,7 +30,9 @@ pub struct Config {
     pub dcu_url: Option<String>,
     pub poll_period_ms: Option<u64>,
     pub contrast: ContrastConfig,
+    #[serde(alias = "resolution-rings")]
     pub resolution_rings: RingConfig,
+    #[serde(alias = "beam-center")]
     pub beam_center: BeamCenterConfig,
 }
 
@@ -39,13 +41,17 @@ pub struct Config {
 pub struct ContrastConfig {
     /// Colormap name: Standard | Grayscale | Inferno | Rocket | Heat
     pub colormap: Option<String>,
+    #[serde(alias = "attenuation")]
+    pub gamma_correction: Option<f32>,
 }
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct RingConfig {
+    pub enabled: Option<bool>,
     /// RGBA color as [R, G, B, A], each 0–255.
     pub color: Option<[u8; 4]>,
+    #[serde(alias = "thickness")]
     pub stroke_width: Option<f32>,
     /// Multiplier applied to the ring-label font size (default 1.0).
     pub font_scale: Option<f32>,
@@ -54,8 +60,10 @@ pub struct RingConfig {
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct BeamCenterConfig {
+    pub enabled: Option<bool>,
     /// RGBA color as [R, G, B, A], each 0–255.
     pub color: Option<[u8; 4]>,
+    #[serde(alias = "thickness")]
     pub stroke_width: Option<f32>,
 }
 
@@ -71,16 +79,19 @@ impl Config {
 
     /// Try the default location (`$HOME/.config/pumpkin/config.toml`).
     /// Returns `Config::default()` if the file does not exist; warns on parse errors.
-    pub fn load_default() -> Self {
+    pub fn load_default() -> (Self, Option<PathBuf>) {
         if let Some(path) = default_config_path() {
             if path.exists() {
-                return Self::load(&path).unwrap_or_else(|e| {
-                    eprintln!("Warning: {e}");
-                    Self::default()
-                });
+                match Self::load(&path) {
+                    Ok(c) => return (c, Some(path)),
+                    Err(e) => {
+                        eprintln!("Warning: {e}");
+                        return (Self::default(), Some(path));
+                    }
+                }
             }
         }
-        Self::default()
+        (Self::default(), None)
     }
 }
 

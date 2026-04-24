@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
@@ -49,8 +48,6 @@ impl MonitorConfig {
 #[derive(Clone)]
 pub struct MonitorBatch {
     pub series_id: u64,
-    /// All image IDs present in the buffer for this series.
-    pub image_ids: Vec<u64>,
     pub frames: Vec<Arc<Frame>>,
 }
 
@@ -155,7 +152,7 @@ pub fn start_monitor_task(cfg: MonitorConfig) -> watch::Receiver<Option<MonitorB
             if !frames.is_empty() {
                 known_series_id = Some(series_id);
                 known_image_count = image_count;
-                let _ = tx.send(Some(MonitorBatch { series_id, image_ids, frames }));
+                let _ = tx.send(Some(MonitorBatch { series_id, frames }));
             }
 
             tokio::time::sleep(Duration::from_millis(cfg.poll_period_ms)).await;
@@ -250,124 +247,6 @@ async fn fetch_tiff(client: &reqwest::Client, url: &str) -> Result<Frame> {
     }
     let bytes = resp.bytes().await.context("read body")?;
     decode_tiff(&bytes)
-}
-
-/// Parse the DECTRIS private IFD tag (0xC7F8) from the raw TIFF bytes.
-#[allow(dead_code)]
-fn parse_dectris_metadata(data: &[u8]) -> Result<FrameMetadata> {
-    const DECTRIS_TAG: u32 = 0xC7F8;
-    const TAG_SERIES_NUMBER: u16 = 0x0002;
-    const TAG_IMAGE_NUMBER: u16 = 0x0003;
-    const TAG_EXPOSURE_TIME: u16 = 0x0007;
-    const TAG_BEAM_CENTER: u16 = 0x0016;
-    const TAG_DETECTOR_DISTANCE: u16 = 0x0017;
-
-    let mut cur = Cursor::new(data);
-
-    let mut bom = [0u8; 2];
-    cur.read_exact(&mut bom)?;
-    let little_endian = match &bom {
-        b"II" => true,
-        b"MM" => false,
-        _ => anyhow::bail!("Not a TIFF file"),
-    };
-
-    let read_u16 = |cur: &mut Cursor<&[u8]>| -> Result<u16> {
-        let mut buf = [0u8; 2];
-        cur.read_exact(&mut buf)?;
-        Ok(if little_endian { u16::from_le_bytes(buf) } else { u16::from_be_bytes(buf) })
-    };
-
-    let read_u32 = |cur: &mut Cursor<&[u8]>| -> Result<u32> {
-        let mut buf = [0u8; 4];
-        cur.read_exact(&mut buf)?;
-        Ok(if little_endian { u32::from_le_bytes(buf) } else { u32::from_be_bytes(buf) })
-    };
-
-    let read_f64_at = |cur: &mut Cursor<&[u8]>, offset: u64| -> Result<f64> {
-        cur.seek(SeekFrom::Start(offset))?;
-        let mut buf = [0u8; 8];
-        cur.read_exact(&mut buf)?;
-        Ok(if little_endian { f64::from_le_bytes(buf) } else { f64::from_be_bytes(buf) })
-    };
-
-    let magic = read_u16(&mut cur)?;
-    if magic != 42 {
-        anyhow::bail!("TIFF magic mismatch: {}", magic);
-    }
-
-    let ifd_offset = read_u32(&mut cur)? as u64;
-    cur.seek(SeekFrom::Start(ifd_offset))?;
-    let entry_count = read_u16(&mut cur)?;
-
-    let mut dectris_offset: Option<u64> = None;
-    for _ in 0..entry_count {
-        let tag = read_u16(&mut cur)?;
-        let _type_ = read_u16(&mut cur)?;
-        let _count = read_u32(&mut cur)?;
-        let value_or_offset = read_u32(&mut cur)?;
-        if tag == DECTRIS_TAG as u16 {
-            dectris_offset = Some(value_or_offset as u64);
-        }
-    }
-
-    let sub_ifd_offset = match dectris_offset {
-        Some(o) => o,
-        None => return Ok(FrameMetadata::default()),
-    };
-
-    cur.seek(SeekFrom::Start(sub_ifd_offset))?;
-    let sub_entry_count = read_u16(&mut cur)?;
-    let mut meta = FrameMetadata::default();
-
-    for _ in 0..sub_entry_count {
-        let tag = read_u16(&mut cur)?;
-        let type_ = read_u16(&mut cur)?;
-        let count = read_u32(&mut cur)?;
-        let val_pos = cur.stream_position()?;
-        let value_or_offset = read_u32(&mut cur)?;
-
-        match tag {
-            TAG_EXPOSURE_TIME => {
-                if type_ == 12 && count == 1 {
-                    if let Ok(v) = read_f64_at(&mut cur, value_or_offset as u64) {
-                        meta.exposure_time = Some(v);
-                    }
-                }
-            }
-            TAG_BEAM_CENTER => {
-                if type_ == 12 && count == 2 {
-                    let offset = value_or_offset as u64;
-                    if let (Ok(x), Ok(y)) = (read_f64_at(&mut cur, offset), read_f64_at(&mut cur, offset + 8)) {
-                        meta.beam_center_x = Some(x);
-                        meta.beam_center_y = Some(y);
-                    }
-                }
-            }
-            TAG_DETECTOR_DISTANCE => {
-                if type_ == 12 && count == 1 {
-                    if let Ok(v) = read_f64_at(&mut cur, value_or_offset as u64) {
-                        meta.detector_distance = Some(v);
-                    }
-                }
-            }
-            TAG_IMAGE_NUMBER => {
-                if type_ == 4 && count == 1 {
-                    meta.image_number = Some(value_or_offset as i64);
-                }
-            }
-            TAG_SERIES_NUMBER => {
-                if type_ == 4 && count == 1 {
-                    meta.series_id = Some(value_or_offset as i64);
-                }
-            }
-            _ => {}
-        }
-
-        cur.seek(SeekFrom::Start(val_pos + 4))?;
-    }
-
-    Ok(meta)
 }
 
 #[cfg(test)]

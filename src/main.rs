@@ -88,15 +88,21 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     // Load config: explicit path → error if missing; default path → silent skip.
-    let cfg = match args.config {
-        Some(ref path) => Config::load(path)?,
+    let (cfg, cfg_path) = match args.config {
+        Some(ref path) => (Config::load(path)?, Some(path.clone())),
         None => Config::load_default(),
     };
+
+    if let Some(path) = cfg_path {
+        eprintln!("Loaded config from: {}", path.display());
+    } else {
+        eprintln!("No config file found, using defaults.");
+    }
 
     // CLI args take precedence over config file values.
     let dcu_url_from_cli = args.dcu_url.is_some();
     let dcu_url = args.dcu_url
-        .or(cfg.dcu_url)
+        .or(cfg.dcu_url.clone())
         .unwrap_or_else(|| "http://localhost".to_string());
 
     let poll_period_ms = args.poll_period_ms
@@ -112,10 +118,17 @@ fn main() -> anyhow::Result<()> {
     if let Some(ref name) = cfg.contrast.colormap {
         contrast.colormap = parse_colormap(name);
     }
+    if let Some(a) = cfg.contrast.gamma_correction {
+        contrast.gamma_correction = a;
+    }
 
     // Build initial overlay settings from config.
     let mut overlays = OverlaySettings::default();
+    if let Some(e) = cfg.resolution_rings.enabled {
+        overlays.show_resolution_rings = e;
+    }
     if let Some(c) = cfg.resolution_rings.color {
+        eprintln!("Applying resolution_rings.color: {:?}", c);
         overlays.ring_color = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
     }
     if let Some(w) = cfg.resolution_rings.stroke_width {
@@ -124,7 +137,11 @@ fn main() -> anyhow::Result<()> {
     if let Some(s) = cfg.resolution_rings.font_scale {
         overlays.ring_font_scale = s;
     }
+    if let Some(e) = cfg.beam_center.enabled {
+        overlays.show_beam_center = e;
+    }
     if let Some(c) = cfg.beam_center.color {
+        eprintln!("Applying beam_center.color: {:?}", c);
         overlays.beam_center_color = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
     }
     if let Some(w) = cfg.beam_center.stroke_width {
