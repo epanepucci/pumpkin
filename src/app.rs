@@ -20,7 +20,7 @@ pub struct ContrastState {
 
 impl Default for ContrastState {
     fn default() -> Self {
-        Self { vmin: 0.0, vmax: 1000.0, auto: true, colormap: Colormap::default() }
+        Self { vmin: 0.0, vmax: 1000.0, auto: true, colormap: Colormap::Inferno }
     }
 }
 
@@ -56,8 +56,8 @@ pub struct PumpkinApp {
 }
 
 impl PumpkinApp {
-    pub fn new(_cc: &eframe::CreationContext, dcu_url: String, poll_period_ms: u64) -> Self {
-        Self {
+    pub fn new(_cc: &eframe::CreationContext, dcu_url: String, poll_period_ms: u64, auto_connect: bool) -> Self {
+        let mut app = Self {
             frame: None,
             frame_rx: None,
             image_texture: ImageTexture::default(),
@@ -75,7 +75,11 @@ impl PumpkinApp {
             hdf5_frame_index: 0,
             show_goto_frame: false,
             goto_frame_input: "0".to_string(),
+        };
+        if auto_connect {
+            app.connect();
         }
+        app
     }
 
     pub fn load_tiff_file(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
@@ -271,6 +275,11 @@ impl PumpkinApp {
         ui.heading("Overlays");
         ui.checkbox(&mut self.overlays.show_beam_center, "Beam center");
         ui.checkbox(&mut self.overlays.show_resolution_rings, "Resolution rings");
+        ui.horizontal(|ui| {
+            ui.label("Color:");
+            ui.color_edit_button_srgba(&mut self.overlays.color);
+        });
+        ui.add(egui::Slider::new(&mut self.overlays.stroke_width, 0.5..=5.0).text("Line width"));
         ui.separator();
 
         ui.heading("Metadata");

@@ -12,9 +12,9 @@ use clap::Parser;
 #[derive(Parser)]
 #[command(name = "pumpkin", about = "X-ray diffraction viewer")]
 struct Args {
-    /// Base URL of the DCU (detector control unit)
-    #[arg(long, default_value = "http://localhost")]
-    dcu_url: String,
+    /// Base URL of the DCU (detector control unit); if given, connects automatically on startup
+    #[arg(long)]
+    dcu_url: Option<String>,
 
     /// How often to poll the monitor buffer list for new images (milliseconds)
     #[arg(long, default_value_t = 500)]
@@ -38,12 +38,13 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    let dcu_url = args.dcu_url;
+    let auto_connect = args.dcu_url.is_some();
+    let dcu_url = args.dcu_url.unwrap_or_else(|| "http://localhost".to_string());
     let poll_period_ms = args.poll_period_ms;
     eframe::run_native(
         "pumpkin",
         native_options,
-        Box::new(|cc| Ok(Box::new(PumpkinApp::new(cc, dcu_url, poll_period_ms)))),
+        Box::new(move |cc| Ok(Box::new(PumpkinApp::new(cc, dcu_url, poll_period_ms, auto_connect)))),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
 

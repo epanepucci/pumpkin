@@ -111,7 +111,7 @@ pub fn draw_overlays(painter: &Painter, view: &ViewState, viewport: Rect, frame:
         if let (Some(cx), Some(cy)) = (frame.metadata.beam_center_x, frame.metadata.beam_center_y) {
             let center = view.image_to_screen(Pos2::new(cx as f32, cy as f32), origin);
             let arm = 12.0;
-            let stroke = egui::Stroke::new(1.5, egui::Color32::YELLOW);
+            let stroke = egui::Stroke::new(overlays.stroke_width, overlays.color);
             painter.line_segment([center + Vec2::new(-arm, 0.0), center + Vec2::new(arm, 0.0)], stroke);
             painter.line_segment([center + Vec2::new(0.0, -arm), center + Vec2::new(0.0, arm)], stroke);
         }
@@ -136,10 +136,15 @@ fn draw_resolution_rings(
     overlays: &OverlaySettings,
 ) {
     let meta = &frame.metadata;
+    // Derive wavelength (Å) from incident_energy (eV) if not directly available:
+    // λ = hc/E = 12398.4 eV·Å / E
+    let wavelength = meta.wavelength.or_else(|| {
+        meta.incident_energy.filter(|&e| e > 0.0).map(|e| 12398.4 / e)
+    });
     let (Some(cx), Some(cy), Some(wavelength), Some(distance), Some(px), Some(py)) = (
         meta.beam_center_x,
         meta.beam_center_y,
-        meta.wavelength,
+        wavelength,
         meta.detector_distance,
         meta.pixel_size_x,
         meta.pixel_size_y,
@@ -151,7 +156,7 @@ fn draw_resolution_rings(
     let center_screen = view.image_to_screen(Pos2::new(cx as f32, cy as f32), origin);
     let px_screen_x = view.zoom / px as f32; // screen pixels per metre in x
 
-    let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(0, 200, 255, 180));
+    let stroke = egui::Stroke::new(overlays.stroke_width, overlays.color);
 
     for &d_spacing in &overlays.resolution_rings_angstrom {
         // Bragg: sin(theta) = lambda / (2 * d)
@@ -231,14 +236,18 @@ pub struct OverlaySettings {
     pub show_resolution_rings: bool,
     /// d-spacings in Angstroms for resolution rings to draw.
     pub resolution_rings_angstrom: Vec<f64>,
+    pub color: egui::Color32,
+    pub stroke_width: f32,
 }
 
 impl Default for OverlaySettings {
     fn default() -> Self {
         Self {
             show_beam_center: true,
-            show_resolution_rings: false,
+            show_resolution_rings: true,
             resolution_rings_angstrom: vec![10.0, 5.0, 3.0, 2.0, 1.5, 1.0],
+            color: egui::Color32::from_rgba_unmultiplied(0, 200, 255, 200),
+            stroke_width: 1.0,
         }
     }
 }

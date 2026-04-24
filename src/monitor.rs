@@ -172,16 +172,20 @@ async fn fetch_series_metadata(client: &reqwest::Client, cfg: &MonitorConfig) ->
     let url_dist = cfg.detector_config_url("detector_distance");
     let url_wl = cfg.detector_config_url("wavelength");
     let url_energy = cfg.detector_config_url("incident_energy");
+    let url_psx = cfg.detector_config_url("x_pixel_size");
+    let url_psy = cfg.detector_config_url("y_pixel_size");
     let url_nimages = cfg.detector_config_url("nimages");
     let url_frame_time = cfg.detector_config_url("frame_time");
     let url_name_pattern = cfg.filewriter_config_url("name_pattern");
 
-    let (bcx, bcy, dist, wl, energy, nimages, frame_time, name_pattern) = tokio::join!(
+    let (bcx, bcy, dist, wl, energy, psx, psy, nimages, frame_time, name_pattern) = tokio::join!(
         fetch_config_f64(client, &url_bcx),
         fetch_config_f64(client, &url_bcy),
         fetch_config_f64(client, &url_dist),
         fetch_config_f64(client, &url_wl),
         fetch_config_f64(client, &url_energy),
+        fetch_config_f64(client, &url_psx),
+        fetch_config_f64(client, &url_psy),
         fetch_config_u32(client, &url_nimages),
         fetch_config_f64(client, &url_frame_time),
         fetch_config_string(client, &url_name_pattern),
@@ -190,8 +194,10 @@ async fn fetch_series_metadata(client: &reqwest::Client, cfg: &MonitorConfig) ->
         beam_center_x: bcx.ok(),
         beam_center_y: bcy.ok(),
         detector_distance: dist.ok(),
-        wavelength: wl.ok(),
+        wavelength: wl.ok().filter(|&v| v > 0.0),
         incident_energy: energy.ok(),
+        pixel_size_x: psx.ok(),
+        pixel_size_y: psy.ok(),
         nimages: nimages.ok(),
         frame_time: frame_time.ok(),
         name_pattern: name_pattern.ok(),
