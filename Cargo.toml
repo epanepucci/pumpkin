@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.102"
 clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 eframe = { version = "0.33.3", features = ["wgpu"] }
 egui = "0.33.3"

@@ -139,7 +139,7 @@ impl ImageTexture {
 
 // --- Tone mapping ---
 
-fn tone_map(pixels: &[u16], _w: u32, _h: u32, vmin: f32, vmax: f32, saturation: u16, colormap: Colormap) -> Vec<u8> {
+pub(crate) fn tone_map(pixels: &[u16], _w: u32, _h: u32, vmin: f32, vmax: f32, saturation: u16, colormap: Colormap) -> Vec<u8> {
     let range = (vmax - vmin).max(1.0);
     let mut rgba = vec![0u8; pixels.len() * 4];
 

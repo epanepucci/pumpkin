@@ -111,7 +111,7 @@ pub fn draw_overlays(painter: &Painter, view: &ViewState, viewport: Rect, frame:
         if let (Some(cx), Some(cy)) = (frame.metadata.beam_center_x, frame.metadata.beam_center_y) {
             let center = view.image_to_screen(Pos2::new(cx as f32, cy as f32), origin);
             let arm = 12.0;
-            let stroke = egui::Stroke::new(overlays.stroke_width, overlays.color);
+            let stroke = egui::Stroke::new(overlays.beam_center_stroke_width, overlays.beam_center_color);
             painter.line_segment([center + Vec2::new(-arm, 0.0), center + Vec2::new(arm, 0.0)], stroke);
             painter.line_segment([center + Vec2::new(0.0, -arm), center + Vec2::new(0.0, arm)], stroke);
         }
@@ -156,7 +156,8 @@ fn draw_resolution_rings(
     let center_screen = view.image_to_screen(Pos2::new(cx as f32, cy as f32), origin);
     let px_screen_x = view.zoom / px as f32; // screen pixels per metre in x
 
-    let stroke = egui::Stroke::new(overlays.stroke_width, overlays.color);
+    let stroke = egui::Stroke::new(overlays.ring_stroke_width, overlays.ring_color);
+    let font_size = 11.0 * overlays.ring_font_scale;
 
     for &d_spacing in &overlays.resolution_rings_angstrom {
         // Bragg: sin(theta) = lambda / (2 * d)
@@ -174,15 +175,15 @@ fn draw_resolution_rings(
 
         painter.circle_stroke(center_screen, radius_screen, stroke);
 
-        // Label the ring with its d-spacing.
+        // Label the ring with its d-spacing; colour follows the ring colour.
         let label_pos = center_screen + Vec2::new(radius_screen * 0.707, -radius_screen * 0.707);
         if viewport.contains(label_pos) {
             painter.text(
                 label_pos,
                 egui::Align2::LEFT_BOTTOM,
                 format!("{:.2} Å", d_spacing),
-                egui::FontId::proportional(11.0),
-                egui::Color32::from_rgba_unmultiplied(0, 200, 255, 220),
+                egui::FontId::proportional(font_size),
+                overlays.ring_color,
             );
         }
 
@@ -229,25 +230,34 @@ fn draw_pixel_values(painter: &Painter, view: &ViewState, viewport: Rect, frame:
     }
 }
 
-/// Which overlays to render.
+/// Which overlays to render and how to style them.
 #[derive(Clone)]
 pub struct OverlaySettings {
     pub show_beam_center: bool,
+    pub beam_center_color: egui::Color32,
+    pub beam_center_stroke_width: f32,
+
     pub show_resolution_rings: bool,
     /// d-spacings in Angstroms for resolution rings to draw.
     pub resolution_rings_angstrom: Vec<f64>,
-    pub color: egui::Color32,
-    pub stroke_width: f32,
+    pub ring_color: egui::Color32,
+    pub ring_stroke_width: f32,
+    /// Multiplier applied to ring-label font size.
+    pub ring_font_scale: f32,
 }
 
 impl Default for OverlaySettings {
     fn default() -> Self {
+        let cyan = egui::Color32::from_rgba_unmultiplied(0, 200, 255, 200);
         Self {
             show_beam_center: true,
+            beam_center_color: cyan,
+            beam_center_stroke_width: 1.5,
             show_resolution_rings: true,
             resolution_rings_angstrom: vec![10.0, 5.0, 3.0, 2.0, 1.5, 1.0],
-            color: egui::Color32::from_rgba_unmultiplied(0, 200, 255, 200),
-            stroke_width: 1.0,
+            ring_color: cyan,
+            ring_stroke_width: 1.0,
+            ring_font_scale: 1.0,
         }
     }
 }

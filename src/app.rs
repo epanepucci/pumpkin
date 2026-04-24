@@ -5,12 +5,14 @@ use tokio::sync::watch;
 
 use crate::frame::Frame;
 use crate::hdf5_loader::Hdf5Series;
+use crate::hdf5_prefetch::HDF5Prefetcher;
 use crate::image_render::{Colormap, ImageTexture};
 use crate::monitor::{MonitorBatch, MonitorConfig, start_monitor_task};
+use crate::monitor_prefetch::MonitorPrefetcher;
 use crate::viewport::{self, OverlaySettings, ViewState};
 
 /// Tone-mapping controls.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct ContrastState {
     pub vmin: f32,
     pub vmax: f32,
@@ -44,11 +46,19 @@ pub struct PumpkinApp {
     monitor_frames: Vec<Arc<Frame>>,
     monitor_frame_index: usize,
     monitor_series_id: Option<u64>,
+    /// VRAM cache for tone-mapped monitor frames.
+    monitor_prefetcher: MonitorPrefetcher,
 
     /// Open HDF5 series, if any.
     hdf5_series: Option<Hdf5Series>,
+    /// Path to the master file (kept for the prefetch thread to open its own handle).
+    hdf5_master_path: Option<std::path::PathBuf>,
     /// Current frame index within the HDF5 series.
     hdf5_frame_index: usize,
+    /// Background prefetcher: loads + tone-maps neighboring frames into VRAM.
+    hdf5_prefetcher: Option<HDF5Prefetcher>,
+    /// Contrast params last used to schedule prefetch requests; invalidate on change.
+    prefetch_contrast: (f32, f32, Colormap),
 
     // goto a given frame by number
     show_goto_frame: bool,
@@ -56,14 +66,21 @@ pub struct PumpkinApp {
 }
 
 impl PumpkinApp {
-    pub fn new(_cc: &eframe::CreationContext, dcu_url: String, poll_period_ms: u64, auto_connect: bool) -> Self {
+    pub fn new(
+        _cc: &eframe::CreationContext,
+        dcu_url: String,
+        poll_period_ms: u64,
+        auto_connect: bool,
+        contrast: ContrastState,
+        overlays: OverlaySettings,
+    ) -> Self {
         let mut app = Self {
             frame: None,
             frame_rx: None,
             image_texture: ImageTexture::default(),
             view: ViewState::default(),
-            contrast: ContrastState::default(),
-            overlays: OverlaySettings::default(),
+            contrast,
+            overlays,
             pending_fit: false,
             dcu_url,
             poll_period_ms,
@@ -71,8 +88,12 @@ impl PumpkinApp {
             monitor_frames: Vec::new(),
             monitor_frame_index: 0,
             monitor_series_id: None,
+            monitor_prefetcher: MonitorPrefetcher::new(),
             hdf5_series: None,
+            hdf5_master_path: None,
             hdf5_frame_index: 0,
+            hdf5_prefetcher: None,
+            prefetch_contrast: (f32::NAN, f32::NAN, Colormap::Inferno),
             show_goto_frame: false,
             goto_frame_input: "0".to_string(),
         };
@@ -91,21 +112,60 @@ impl PumpkinApp {
 
     pub fn load_hdf5_master(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
         let series = Hdf5Series::open(path)?;
-        // Load the first frame immediately so the viewer shows something.
         let first = series.load_frame(0)?;
+        let prefetcher = HDF5Prefetcher::new(path.to_path_buf(), series.saturation_value);
+        self.hdf5_master_path = Some(path.to_path_buf());
         self.hdf5_series = Some(series);
+        self.hdf5_prefetcher = Some(prefetcher);
         self.hdf5_frame_index = 0;
         self.on_new_frame(Arc::new(first));
+        self.schedule_hdf5_prefetch();
         Ok(())
     }
 
+    /// Navigate to an HDF5 frame, using the VRAM cache when available.
     fn load_hdf5_frame(&mut self, index: usize) {
+        // Fast path: texture + frame already prefetched into VRAM.
+        if let Some(ref prefetcher) = self.hdf5_prefetcher {
+            if let Some(cached) = prefetcher.get(index) {
+                // Clone the Frame out so we can release the borrow on self.
+                let frame = Arc::new(cached.frame.clone());
+                self.display_frame(frame);
+                self.schedule_hdf5_prefetch();
+                return;
+            }
+        }
+
+        // Slow path: synchronous disk read (prefetcher will cover this on the next navigation).
         if let Some(ref series) = self.hdf5_series {
             match series.load_frame(index) {
                 Ok(frame) => self.on_new_frame(Arc::new(frame)),
                 Err(e) => eprintln!("HDF5 frame {index}: {e}"),
             }
         }
+        self.schedule_hdf5_prefetch();
+    }
+
+    /// Request the current frame and its neighbors from the background prefetcher.
+    fn schedule_hdf5_prefetch(&mut self) {
+        let Some(ref series) = self.hdf5_series else { return };
+        let Some(ref mut prefetcher) = self.hdf5_prefetcher else { return };
+        let total = series.total_frames;
+        let cur = self.hdf5_frame_index;
+        let vmin = self.contrast.vmin;
+        let vmax = self.contrast.vmax;
+        let colormap = self.contrast.colormap;
+
+        for offset in 0..=3usize {
+            if cur + offset < total {
+                prefetcher.request(cur + offset, vmin, vmax, colormap);
+            }
+            if offset > 0 && cur >= offset {
+                prefetcher.request(cur - offset, vmin, vmax, colormap);
+            }
+        }
+        prefetcher.evict_distant(cur);
+        self.prefetch_contrast = (vmin, vmax, colormap);
     }
 
     pub fn goto_frame(&mut self, ctx: &egui::Context) {
@@ -151,9 +211,8 @@ impl PumpkinApp {
     }
 
     fn do_goto_frame(&mut self, frame: usize) {
-        // 👉 your logic here
         self.hdf5_frame_index = frame;
-        self.load_hdf5_frame(self.hdf5_frame_index);
+        self.load_hdf5_frame(frame);
     }
 
     /// Update displayed frame and auto-contrast without touching pending_fit.
@@ -185,6 +244,15 @@ impl PumpkinApp {
             self.monitor_frame_index = self.monitor_frame_index.min(self.monitor_frames.len().saturating_sub(1));
         }
 
+        // Kick off background tone-mapping for all frames in the batch.
+        self.monitor_prefetcher.submit_batch(
+            &self.monitor_frames,
+            new_series,
+            self.contrast.vmin,
+            self.contrast.vmax,
+            self.contrast.colormap,
+        );
+
         if let Some(frame) = self.monitor_frames.get(self.monitor_frame_index) {
             self.display_frame(frame.clone());
         }
@@ -206,6 +274,7 @@ impl PumpkinApp {
         self.monitor_frames.clear();
         self.monitor_series_id = None;
         self.monitor_frame_index = 0;
+        self.monitor_prefetcher.invalidate();
     }
 
     fn poll_new_frame(&mut self) -> bool {
@@ -273,13 +342,30 @@ impl PumpkinApp {
         ui.separator();
 
         ui.heading("Overlays");
+
         ui.checkbox(&mut self.overlays.show_beam_center, "Beam center");
-        ui.checkbox(&mut self.overlays.show_resolution_rings, "Resolution rings");
-        ui.horizontal(|ui| {
-            ui.label("Color:");
-            ui.color_edit_button_srgba(&mut self.overlays.color);
+        egui::Grid::new("beam_center_grid").num_columns(2).show(ui, |ui| {
+            ui.label("  Color");
+            ui.color_edit_button_srgba(&mut self.overlays.beam_center_color);
+            ui.end_row();
+            ui.label("  Width");
+            ui.add(egui::Slider::new(&mut self.overlays.beam_center_stroke_width, 0.5..=5.0));
+            ui.end_row();
         });
-        ui.add(egui::Slider::new(&mut self.overlays.stroke_width, 0.5..=5.0).text("Line width"));
+
+        ui.checkbox(&mut self.overlays.show_resolution_rings, "Resolution rings");
+        egui::Grid::new("rings_grid").num_columns(2).show(ui, |ui| {
+            ui.label("  Color");
+            ui.color_edit_button_srgba(&mut self.overlays.ring_color);
+            ui.end_row();
+            ui.label("  Width");
+            ui.add(egui::Slider::new(&mut self.overlays.ring_stroke_width, 0.5..=5.0));
+            ui.end_row();
+            ui.label("  Font scale");
+            ui.add(egui::Slider::new(&mut self.overlays.ring_font_scale, 0.5..=3.0));
+            ui.end_row();
+        });
+
         ui.separator();
 
         ui.heading("Metadata");
@@ -427,12 +513,34 @@ impl PumpkinApp {
         // Handle pan + zoom input.
         viewport::handle_input(&mut self.view, &response, Some(frame));
 
-        // Get/update the GPU texture.
-        let frame_ptr = Arc::as_ptr(frame) as usize;
-        let Some(texture) =
-            self.image_texture.update(ctx, frame, frame_ptr, self.contrast.vmin, self.contrast.vmax, self.contrast.colormap)
-        else {
-            return;
+        // Resolve the GPU texture: use a prefetched VRAM handle when available,
+        // otherwise tone-map on-demand via ImageTexture.
+        let prefetched_id = self.hdf5_prefetcher
+            .as_ref()
+            .and_then(|p| p.get(self.hdf5_frame_index))
+            .map(|c| c.texture.id())
+            .or_else(|| {
+                self.monitor_prefetcher
+                    .get(self.monitor_frame_index)
+                    .map(|h| h.id())
+            });
+
+        let texture_id = match prefetched_id {
+            Some(id) => id,
+            None => {
+                let frame_ptr = Arc::as_ptr(frame) as usize;
+                let Some(t) = self.image_texture.update(
+                    ctx,
+                    frame,
+                    frame_ptr,
+                    self.contrast.vmin,
+                    self.contrast.vmax,
+                    self.contrast.colormap,
+                ) else {
+                    return;
+                };
+                t.id()
+            }
         };
 
         // Compute where the image should be rendered on screen.
@@ -444,7 +552,7 @@ impl PumpkinApp {
         // Clip the drawn image to the viewport area.
         let painter = ui.painter().with_clip_rect(available);
         painter.image(
-            texture.id(),
+            texture_id,
             image_screen_rect,
             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
             egui::Color32::WHITE,
@@ -522,6 +630,39 @@ impl eframe::App for PumpkinApp {
                 let frame = self.monitor_frames[self.monitor_frame_index].clone();
                 self.display_frame(frame);
             }
+        }
+
+        // Poll prefetchers and upload any completed textures.
+        if let Some(ref mut prefetcher) = self.hdf5_prefetcher {
+            if prefetcher.poll(ctx) {
+                ctx.request_repaint();
+            }
+        }
+        if self.monitor_prefetcher.poll(ctx) {
+            ctx.request_repaint();
+        }
+
+        // Invalidate prefetcher caches when contrast settings change.
+        let cur_contrast = (self.contrast.vmin, self.contrast.vmax, self.contrast.colormap);
+        if cur_contrast != self.prefetch_contrast {
+            if self.hdf5_series.is_some() {
+                if let Some(ref mut prefetcher) = self.hdf5_prefetcher {
+                    prefetcher.invalidate();
+                }
+                self.schedule_hdf5_prefetch();
+            }
+            if !self.monitor_frames.is_empty() {
+                self.monitor_prefetcher.invalidate();
+                self.monitor_prefetcher.submit_batch(
+                    &self.monitor_frames,
+                    false,
+                    cur_contrast.0,
+                    cur_contrast.1,
+                    cur_contrast.2,
+                );
+            }
+            // Must update after the block; NaN != NaN would re-trigger every frame otherwise.
+            self.prefetch_contrast = cur_contrast;
         }
 
         if self.poll_new_frame() {
