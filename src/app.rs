@@ -384,20 +384,114 @@ impl PumpkinApp {
     }
 
     fn show_left_panel(&mut self, ui: &mut Ui) {
-        ui.heading("Connection");
+        ui.heading("Open file");
         ui.horizontal(|ui| {
-            ui.label("DCU URL:");
-            ui.text_edit_singleline(&mut self.dcu_url);
-        });
-        if self.connected {
-            if ui.button("Disconnect").clicked() {
-                self.disconnect();
+            if ui.button("Open HDF5…").on_hover_text("Open HDF5 master file (Ctrl+O)").clicked() {
+                self.open_hdf5_dialog();
             }
-        } else if ui.button("Connect").clicked() {
-            self.connect();
-        }
+        });
         ui.separator();
 
+        ui.heading("Metadata");
+        if let Some(ref frame) = self.frame {
+            let meta = &frame.metadata;
+            egui::Grid::new("meta_grid").num_columns(2).show(ui, |ui| {
+                macro_rules! row {
+                    ($label:expr, $val:expr) => {
+                        ui.label($label);
+                        ui.label($val);
+                        ui.end_row();
+                    };
+                }
+                row!("Size", format!("{}×{}", frame.width, frame.height));
+                row!("Beam X", meta.beam_center_x.map_or("-".into(), |v| format!("{v:.1} px")));
+                row!("Beam Y", meta.beam_center_y.map_or("-".into(), |v| format!("{v:.1} px")));
+                row!("Distance", meta.detector_distance.map_or("-".into(), |v| format!("{:.1} mm", v * 1000.0)));
+                row!("Wavelength", meta.wavelength.map_or("-".into(), |v| format!("{v:.4} Å")));
+                row!("Energy", meta.incident_energy.map_or("-".into(), |v| format!("{:.3} keV", v / 1000.0)));
+                row!("Frame time", meta.frame_time.map_or("-".into(), |v| format!("{:.1} ms", v * 1000.0)));
+                row!("Exposure", meta.exposure_time.map_or("-".into(), |v| format!("{v:.4} s")));
+                if let Some(n) = meta.nimages {
+                    row!("N images", n.to_string());
+                }
+                if let Some(n) = meta.image_number {
+                    row!("Image #", n.to_string());
+                }
+                if let Some(ref p) = meta.name_pattern {
+                    let name = std::path::Path::new(p)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(p.as_str());
+                    row!("Name", name.to_string());
+                }
+            });
+        } else {
+            ui.label("No image loaded.");
+        }
+
+        ui.separator();
+        ui.heading("Frame browser");
+        // HDF5 Frame browser
+        if let Some(ref series) = self.hdf5_series {
+            let total = series.total_frames;
+            ui.label(format!("{total} frames"));
+
+            let old_index = self.hdf5_frame_index;
+
+            // Slider over the full range.
+            ui.add(egui::Slider::new(&mut self.hdf5_frame_index, 0..=total.saturating_sub(1)).text("frame"));
+
+            ui.horizontal(|ui| {
+                if ui.button("◀").clicked() && self.hdf5_frame_index > 0 {
+                    self.hdf5_frame_index -= 1;
+                }
+                if ui.button("▶").clicked() && self.hdf5_frame_index + 1 < total {
+                    self.hdf5_frame_index += 1;
+                }
+                if ui.button("|◀").clicked() {
+                    self.hdf5_frame_index = 0;
+                }
+                if ui.button("▶|").clicked() {
+                    self.hdf5_frame_index = total.saturating_sub(1);
+                }
+            });
+
+            if self.hdf5_frame_index != old_index {
+                self.load_hdf5_frame(self.hdf5_frame_index);
+            }
+        }
+
+        // Monitor frame browser — shown when the last series has ≤4 images.
+        if self.monitor_frames.len() > 1 {
+            let total = self.monitor_frames.len();
+            let series_id = self.monitor_series_id.unwrap_or(0);
+            ui.label(format!("Series {series_id} — {total} frames"));
+
+            let old_index = self.monitor_frame_index;
+            ui.add(egui::Slider::new(&mut self.monitor_frame_index, 0..=total.saturating_sub(1)).text("frame"));
+
+            ui.horizontal(|ui| {
+                if ui.button("|◀").clicked() {
+                    self.monitor_frame_index = 0;
+                }
+                if ui.button("◀").clicked() && self.monitor_frame_index > 0 {
+                    self.monitor_frame_index -= 1;
+                }
+                if ui.button("▶").clicked() && self.monitor_frame_index + 1 < total {
+                    self.monitor_frame_index += 1;
+                }
+                if ui.button("▶|").clicked() {
+                    self.monitor_frame_index = total.saturating_sub(1);
+                }
+            });
+
+            if self.monitor_frame_index != old_index {
+                let frame = self.monitor_frames[self.monitor_frame_index].clone();
+                self.display_frame(frame);
+            }
+        }
+
+        ui.separator();
         ui.heading("Contrast");
         ui.checkbox(&mut self.contrast.auto, "Auto");
 
@@ -476,44 +570,6 @@ impl PumpkinApp {
 
         ui.separator();
 
-        ui.heading("Metadata");
-        if let Some(ref frame) = self.frame {
-            let meta = &frame.metadata;
-            egui::Grid::new("meta_grid").num_columns(2).show(ui, |ui| {
-                macro_rules! row {
-                    ($label:expr, $val:expr) => {
-                        ui.label($label);
-                        ui.label($val);
-                        ui.end_row();
-                    };
-                }
-                row!("Size", format!("{}×{}", frame.width, frame.height));
-                row!("Beam X", meta.beam_center_x.map_or("-".into(), |v| format!("{v:.1} px")));
-                row!("Beam Y", meta.beam_center_y.map_or("-".into(), |v| format!("{v:.1} px")));
-                row!("Distance", meta.detector_distance.map_or("-".into(), |v| format!("{:.1} mm", v * 1000.0)));
-                row!("Wavelength", meta.wavelength.map_or("-".into(), |v| format!("{v:.4} Å")));
-                row!("Energy", meta.incident_energy.map_or("-".into(), |v| format!("{:.3} keV", v / 1000.0)));
-                row!("Frame time", meta.frame_time.map_or("-".into(), |v| format!("{:.1} ms", v * 1000.0)));
-                row!("Exposure", meta.exposure_time.map_or("-".into(), |v| format!("{v:.4} s")));
-                if let Some(n) = meta.nimages {
-                    row!("N images", n.to_string());
-                }
-                if let Some(n) = meta.image_number {
-                    row!("Image #", n.to_string());
-                }
-                if let Some(ref p) = meta.name_pattern {
-                    let name = std::path::Path::new(p)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(p.as_str());
-                    row!("Name", name.to_string());
-                }
-            });
-        } else {
-            ui.label("No image loaded.");
-        }
-        ui.separator();
-
         ui.heading("Viewport");
         ui.add_enabled_ui(self.frame.is_some() && self.last_viewport_rect.is_positive(), |ui| {
             ui.horizontal(|ui| {
@@ -530,77 +586,18 @@ impl PumpkinApp {
         if self.frame.is_some() {
             ui.label(format!("Zoom: {:.2}×", self.view.zoom));
         }
-        ui.separator();
 
-        ui.heading("Open file");
+        ui.heading("Connection");
         ui.horizontal(|ui| {
-            if ui.button("Open HDF5…").on_hover_text("Open HDF5 master file (Ctrl+O)").clicked() {
-                self.open_hdf5_dialog();
-            }
+            ui.label("DCU URL:");
+            ui.text_edit_singleline(&mut self.dcu_url);
         });
-
-        // Frame browser — only shown when an HDF5 series is open.
-        if let Some(ref series) = self.hdf5_series {
-            ui.separator();
-            ui.heading("Frame browser");
-            let total = series.total_frames;
-            ui.label(format!("{total} frames"));
-
-            let old_index = self.hdf5_frame_index;
-
-            // Slider over the full range.
-            ui.add(egui::Slider::new(&mut self.hdf5_frame_index, 0..=total.saturating_sub(1)).text("frame"));
-
-            ui.horizontal(|ui| {
-                if ui.button("◀").clicked() && self.hdf5_frame_index > 0 {
-                    self.hdf5_frame_index -= 1;
-                }
-                if ui.button("▶").clicked() && self.hdf5_frame_index + 1 < total {
-                    self.hdf5_frame_index += 1;
-                }
-                if ui.button("|◀").clicked() {
-                    self.hdf5_frame_index = 0;
-                }
-                if ui.button("▶|").clicked() {
-                    self.hdf5_frame_index = total.saturating_sub(1);
-                }
-            });
-
-            if self.hdf5_frame_index != old_index {
-                self.load_hdf5_frame(self.hdf5_frame_index);
+        if self.connected {
+            if ui.button("Disconnect").clicked() {
+                self.disconnect();
             }
-        }
-
-        // Monitor frame browser — shown when the last series has ≤4 images.
-        if self.monitor_frames.len() > 1 {
-            ui.separator();
-            ui.heading("Frame browser");
-            let total = self.monitor_frames.len();
-            let series_id = self.monitor_series_id.unwrap_or(0);
-            ui.label(format!("Series {series_id} — {total} frames"));
-
-            let old_index = self.monitor_frame_index;
-            ui.add(egui::Slider::new(&mut self.monitor_frame_index, 0..=total.saturating_sub(1)).text("frame"));
-
-            ui.horizontal(|ui| {
-                if ui.button("|◀").clicked() {
-                    self.monitor_frame_index = 0;
-                }
-                if ui.button("◀").clicked() && self.monitor_frame_index > 0 {
-                    self.monitor_frame_index -= 1;
-                }
-                if ui.button("▶").clicked() && self.monitor_frame_index + 1 < total {
-                    self.monitor_frame_index += 1;
-                }
-                if ui.button("▶|").clicked() {
-                    self.monitor_frame_index = total.saturating_sub(1);
-                }
-            });
-
-            if self.monitor_frame_index != old_index {
-                let frame = self.monitor_frames[self.monitor_frame_index].clone();
-                self.display_frame(frame);
-            }
+        } else if ui.button("Connect").clicked() {
+            self.connect();
         }
 
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
