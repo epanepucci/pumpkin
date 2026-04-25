@@ -428,9 +428,12 @@ impl PumpkinApp {
         if ui.is_rect_visible(rect) {
             let painter = ui.painter();
             let n = rect.width().ceil() as usize;
+            let gamma = self.contrast.gamma_correction;
+            let att = |c: u8| -> u8 { ((c as f32 / 255.0).powf(gamma) * 255.0).round() as u8 };
             for i in 0..n {
                 let t = i as f32 / (n.saturating_sub(1)) as f32;
                 let [r, g, b] = self.contrast.colormap.apply(t);
+                let (r, g, b) = (att(r), att(g), att(b));
                 painter.rect_filled(
                     egui::Rect::from_min_max(
                         egui::pos2(rect.left() + i as f32, rect.top()),
