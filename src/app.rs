@@ -70,6 +70,7 @@ pub struct PumpkinApp {
     goto_frame_input: String,
 
     show_help: bool,
+    show_panel: bool,
 
     /// Last folder used to open a file.
     last_location: Option<std::path::PathBuf>,
@@ -141,6 +142,7 @@ impl PumpkinApp {
             show_goto_frame: false,
             goto_frame_input: "0".to_string(),
             show_help: false,
+            show_panel: true,
             last_location: Self::load_last_location(),
         };
         if auto_connect {
@@ -290,6 +292,7 @@ impl PumpkinApp {
                     ui.label("Ctrl+O"); ui.label("Open HDF5 master"); ui.end_row();
                     ui.label("Ctrl+G"); ui.label("Go to frame number"); ui.end_row();
                     ui.label("Ctrl+Q"); ui.label("Quit"); ui.end_row();
+                    ui.label("Tab"); ui.label("Hide / show side panel"); ui.end_row();
                     ui.label("?"); ui.label("Show this help"); ui.end_row();
                 });
 
@@ -717,9 +720,14 @@ impl eframe::App for PumpkinApp {
         let fit_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Num0);
         let zoom11_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Num1);
         let help_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Questionmark);
+        let panel_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Tab);
 
         if ctx.input_mut(|i| i.consume_shortcut(&help_shortcut)) {
             self.show_help = !self.show_help;
+        }
+
+        if ctx.input_mut(|i| i.consume_shortcut(&panel_shortcut)) {
+            self.show_panel = !self.show_panel;
         }
 
         if self.show_help {
@@ -831,7 +839,7 @@ impl eframe::App for PumpkinApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
 
-        SidePanel::left("left_panel").resizable(true).default_width(240.0).show(ctx, |ui| {
+        SidePanel::left("left_panel").resizable(true).default_width(240.0).show_animated(ctx, self.show_panel, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
                 self.show_left_panel(ui);
             });
