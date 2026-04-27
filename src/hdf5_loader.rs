@@ -59,9 +59,10 @@ impl Hdf5Series {
         let saturation_value = master
             .dataset("/entry/instrument/detector/saturation_value")
             .ok()
-            .and_then(|ds| ds.read_scalar::<i64>().ok())
+            .and_then(|ds| read_scalar_i64(&ds))
             .map(|v| v.clamp(0, u16::MAX as i64) as u16)
             .unwrap_or(u16::MAX);
+        eprintln!("HDF5: saturation_value = {saturation_value}");
 
         // --- Total frames ---
         let total_frames = master
@@ -127,10 +128,15 @@ impl Hdf5Series {
         let pixels = read_pixels_auto(&ds, within_idx)
             .with_context(|| format!("Cannot read frame {index} from {ds_path}"))?;
 
+        let sat = self.saturation_value;
+        let n_sat = pixels.iter().filter(|&&v| v >= sat).count();
+        let max_px = pixels.iter().copied().max().unwrap_or(0);
+        eprintln!("HDF5 frame {index}: sat_threshold={sat} pixels>={sat}: {n_sat} max_pixel={max_px}");
+
         let mut metadata = self.series_metadata.clone();
         metadata.image_number = Some(index as i64);
 
-        Ok(Frame { pixels, width, height, saturation_value: self.saturation_value, metadata })
+        Ok(Frame { pixels, width, height, saturation_value: sat, metadata })
     }
 }
 
@@ -173,6 +179,27 @@ fn read_pixels_auto(ds: &hdf5::Dataset, within_idx: usize) -> Result<Vec<u16>> {
             Err(anyhow::anyhow!("dtype_size={dtype_size}B, read failed as i16/u32/u16/i32; see stderr for HDF5 error"))
         }
     }
+}
+
+/// Read a scalar (or 1-element array) dataset as i64, trying common integer types.
+fn read_scalar_i64(ds: &hdf5::Dataset) -> Option<i64> {
+    if let Ok(v) = ds.read_scalar::<i64>()  { return Some(v); }
+    if let Ok(v) = ds.read_scalar::<i32>()  { return Some(v as i64); }
+    if let Ok(v) = ds.read_scalar::<u32>()  { return Some(v as i64); }
+    if let Ok(v) = ds.read_scalar::<i16>()  { return Some(v as i64); }
+    if let Ok(v) = ds.read_scalar::<u16>()  { return Some(v as i64); }
+    if let Ok(v) = ds.read_scalar::<u64>()  { return Some(v.min(i64::MAX as u64) as i64); }
+    if let Ok(v) = ds.read_scalar::<f64>()  { return Some(v as i64); }
+    if let Ok(v) = ds.read_scalar::<f32>()  { return Some(v as i64); }
+    // Some files store it as a 1-element array.
+    if let Ok(arr) = ds.read_1d::<i64>() { return arr.first().copied(); }
+    if let Ok(arr) = ds.read_1d::<i32>() { return arr.first().map(|&v| v as i64); }
+    if let Ok(arr) = ds.read_1d::<u32>() { return arr.first().map(|&v| v as i64); }
+    if let Ok(arr) = ds.read_1d::<i16>() { return arr.first().map(|&v| v as i64); }
+    if let Ok(arr) = ds.read_1d::<u16>() { return arr.first().map(|&v| v as i64); }
+    eprintln!("HDF5: could not read saturation_value (dtype size={}B) — defaulting to u16::MAX",
+        ds.dtype().map(|dt| dt.size()).unwrap_or(0));
+    None
 }
 
 /// Read a scalar dataset as f64 (handles f32 and f64 source types).

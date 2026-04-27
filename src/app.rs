@@ -21,11 +21,21 @@ pub struct ContrastState {
     /// Power-law exponent applied after linear normalisation: t' = t^gamma_correction.
     /// 1.0 = linear (no change); >1.0 darkens background, preserves bright peaks.
     pub gamma_correction: f32,
+    pub histogram_log: bool,
+    pub histogram_bins: usize,
 }
 
 impl Default for ContrastState {
     fn default() -> Self {
-        Self { vmin: 0.0, vmax: 1000.0, auto: true, colormap: Colormap::Inferno, gamma_correction: 1.0 }
+        Self {
+            vmin: 0.0,
+            vmax: 1000.0,
+            auto: true,
+            colormap: Colormap::Inferno,
+            gamma_correction: 1.0,
+            histogram_log: true,
+            histogram_bins: 256,
+        }
     }
 }
 
@@ -64,6 +74,12 @@ pub struct PumpkinApp {
     hdf5_prefetcher: Option<HDF5Prefetcher>,
     /// Contrast params last used to schedule prefetch requests; invalidate on change.
     prefetch_contrast: (f32, f32, f32, Colormap),
+
+    saturation_override_enabled: bool,
+    saturation_override_value: u16,
+
+    /// Cached histogram counts. Invalidated when frame, saturation, or bin count changes.
+    histogram_cache: Option<(usize, u16, usize, Vec<u32>)>, // (frame_ptr, saturation, n_bins, counts)
 
     // goto a given frame by number
     show_goto_frame: bool,
@@ -139,6 +155,9 @@ impl PumpkinApp {
             hdf5_frame_index: 0,
             hdf5_prefetcher: None,
             prefetch_contrast: (f32::NAN, f32::NAN, f32::NAN, Colormap::Inferno),
+            saturation_override_enabled: true,
+            saturation_override_value: 32767,
+            histogram_cache: None,
             show_goto_frame: false,
             goto_frame_input: "0".to_string(),
             show_help: false,
@@ -154,7 +173,7 @@ impl PumpkinApp {
     pub fn load_hdf5_master(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
         let series = Hdf5Series::open(path)?;
         let first = series.load_frame(0)?;
-        let prefetcher = HDF5Prefetcher::new(path.to_path_buf(), series.saturation_value);
+        let prefetcher = HDF5Prefetcher::new(path.to_path_buf());
         self.hdf5_master_path = Some(path.to_path_buf());
         self.hdf5_series = Some(series);
         self.hdf5_prefetcher = Some(prefetcher);
@@ -187,6 +206,14 @@ impl PumpkinApp {
         self.schedule_hdf5_prefetch();
     }
 
+    fn effective_saturation(&self) -> u16 {
+        if self.saturation_override_enabled {
+            self.saturation_override_value
+        } else {
+            self.frame.as_ref().map(|f| f.saturation_value).unwrap_or(u16::MAX)
+        }
+    }
+
     /// Request the current frame and its neighbors from the background prefetcher.
     fn schedule_hdf5_prefetch(&mut self) {
         let Some(ref series) = self.hdf5_series else { return };
@@ -196,14 +223,19 @@ impl PumpkinApp {
         let vmin = self.contrast.vmin;
         let vmax = self.contrast.vmax;
         let gamma_correction = self.contrast.gamma_correction;
+        let saturation = if self.saturation_override_enabled {
+            self.saturation_override_value
+        } else {
+            self.frame.as_ref().map(|f| f.saturation_value).unwrap_or(u16::MAX)
+        };
         let colormap = self.contrast.colormap;
 
         for offset in 0..=3usize {
             if cur + offset < total {
-                prefetcher.request(cur + offset, vmin, vmax, gamma_correction, colormap);
+                prefetcher.request(cur + offset, vmin, vmax, gamma_correction, saturation, colormap);
             }
             if offset > 0 && cur >= offset {
-                prefetcher.request(cur - offset, vmin, vmax, gamma_correction, colormap);
+                prefetcher.request(cur - offset, vmin, vmax, gamma_correction, saturation, colormap);
             }
         }
         prefetcher.evict_distant(cur);
@@ -341,6 +373,7 @@ impl PumpkinApp {
             self.contrast.vmin,
             self.contrast.vmax,
             self.contrast.gamma_correction,
+            self.effective_saturation(),
             self.contrast.colormap,
         );
 
@@ -493,23 +526,120 @@ impl PumpkinApp {
 
         ui.separator();
         ui.heading("Contrast");
-        ui.checkbox(&mut self.contrast.auto, "Auto");
+        let run_auto = ui.horizontal(|ui| {
+            ui.checkbox(&mut self.contrast.auto, "Auto");
+            ui.add_enabled(self.frame.is_some(), egui::Button::new("Run")).clicked()
+        }).inner;
+        if run_auto {
+            if let Some(frame) = self.frame.clone() {
+                let (vmin, vmax) = auto_contrast(&frame);
+                self.contrast.vmin = vmin;
+                self.contrast.vmax = vmax;
+            }
+        }
 
-        let frame_max = self.frame.as_ref().map(|f| f.saturation_value as f32).unwrap_or(65535.0);
-        let vmin_max = (self.contrast.vmax - 10.0).max(0.0);
+        let frame_max = self.effective_saturation() as f32;
+        let vmin_max = (self.contrast.vmax - 1.0).max(1.0);
         ui.add_enabled(
             !self.contrast.auto,
-            egui::Slider::new(&mut self.contrast.vmin, 0.0..=vmin_max).text("Background"),
+            egui::Slider::new(&mut self.contrast.vmin, 0.0..=vmin_max).fixed_decimals(1).text("Background"),
         );
         ui.add_enabled(
             !self.contrast.auto,
-            egui::Slider::new(&mut self.contrast.vmax, self.contrast.vmin..=frame_max).text("Foreground"),
+            egui::Slider::new(&mut self.contrast.vmax, self.contrast.vmin..=frame_max).fixed_decimals(1).text("Foreground"),
         );
         ui.add(
             egui::Slider::new(&mut self.contrast.gamma_correction, 1.0..=10.0)
                 .step_by(0.1)
                 .text("Gamma"),
         );
+
+        // Saturation override
+        let sat_changed = ui.horizontal(|ui| {
+            let before = (self.saturation_override_enabled, self.saturation_override_value);
+            ui.checkbox(&mut self.saturation_override_enabled, "Force saturation");
+            ui.add_enabled(
+                self.saturation_override_enabled,
+                egui::DragValue::new(&mut self.saturation_override_value).range(1..=u16::MAX),
+            );
+            (self.saturation_override_enabled, self.saturation_override_value) != before
+        }).inner;
+        if sat_changed {
+            if let Some(ref mut prefetcher) = self.hdf5_prefetcher {
+                prefetcher.invalidate();
+            }
+            self.schedule_hdf5_prefetch();
+            self.image_texture = crate::image_render::ImageTexture::default();
+        }
+
+        // Histogram
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.contrast.histogram_log, "Log");
+            ui.add(
+                egui::Slider::new(&mut self.contrast.histogram_bins, 32..=512)
+                    .step_by(32.0)
+                    .text("Bins"),
+            );
+        });
+        let hist_height = 80.0;
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), hist_height), egui::Sense::hover());
+        if ui.is_rect_visible(rect) {
+            if let Some(ref frame) = self.frame {
+                let n_bins = self.contrast.histogram_bins;
+                let sat = self.effective_saturation();
+                let frame_ptr = Arc::as_ptr(frame) as usize;
+                let cache_valid = self.histogram_cache.as_ref()
+                    .is_some_and(|(p, s, n, _)| *p == frame_ptr && *s == sat && *n == n_bins);
+                if !cache_valid {
+                    let mut counts = vec![0u32; n_bins];
+                    for &v in &frame.pixels {
+                        if v < sat {
+                            let bin = ((v as usize * n_bins) / sat as usize).min(n_bins - 1);
+                            counts[bin] += 1;
+                        }
+                    }
+                    self.histogram_cache = Some((frame_ptr, sat, n_bins, counts));
+                }
+                let counts = &self.histogram_cache.as_ref().unwrap().3;
+                let heights: Vec<f32> = counts
+                    .iter()
+                    .map(|&c| if self.contrast.histogram_log {
+                        if c > 0 { (c as f32).ln() } else { 0.0 }
+                    } else {
+                        c as f32
+                    })
+                    .collect();
+                let max_h = heights.iter().cloned().fold(0.0f32, f32::max).max(1.0);
+                let painter = ui.painter();
+                painter.rect_filled(rect, 0.0, egui::Color32::from_gray(20));
+                let bar_w = rect.width() / n_bins as f32;
+                for (i, &h) in heights.iter().enumerate() {
+                    let norm = h / max_h;
+                    let x0 = rect.left() + i as f32 * bar_w;
+                    let y0 = rect.bottom() - norm * rect.height();
+                    painter.rect_filled(
+                        egui::Rect::from_min_max(
+                            egui::pos2(x0, y0),
+                            egui::pos2(x0 + bar_w + 0.5, rect.bottom()),
+                        ),
+                        0.0,
+                        egui::Color32::from_gray(180),
+                    );
+                }
+                // vmin / vmax markers
+                let to_x = |v: f32| rect.left() + (v / sat as f32).clamp(0.0, 1.0) * rect.width();
+                let stroke_vmin = egui::Stroke::new(1.5, egui::Color32::from_rgb(80, 200, 80));
+                let stroke_vmax = egui::Stroke::new(1.5, egui::Color32::from_rgb(200, 80, 80));
+                let vmin_x = to_x(self.contrast.vmin);
+                let vmax_x = to_x(self.contrast.vmax);
+                painter.line_segment([egui::pos2(vmin_x, rect.top()), egui::pos2(vmin_x, rect.bottom())], stroke_vmin);
+                painter.line_segment([egui::pos2(vmax_x, rect.top()), egui::pos2(vmax_x, rect.bottom())], stroke_vmax);
+            } else {
+                ui.painter().rect_filled(rect, 0.0, egui::Color32::from_gray(20));
+            }
+        }
+
         egui::ComboBox::from_label("Colormap")
             .selected_text(self.contrast.colormap.label())
             .show_ui(ui, |ui| {
@@ -662,6 +792,7 @@ impl PumpkinApp {
                     self.contrast.vmin,
                     self.contrast.vmax,
                     self.contrast.gamma_correction,
+                    self.effective_saturation(),
                     self.contrast.colormap,
                 ) else {
                     return;
@@ -714,8 +845,8 @@ impl eframe::App for PumpkinApp {
         let previous_image_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::ArrowLeft);
         let goto_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::G);
         let open_hdf5_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
-        let fit_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Num0);
-        let zoom11_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Num1);
+        let fit_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num0);
+        let zoom11_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num1);
         let help_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Questionmark);
         let panel_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Tab);
 
@@ -820,6 +951,7 @@ impl eframe::App for PumpkinApp {
                     cur_contrast.0,
                     cur_contrast.1,
                     cur_contrast.2,
+                    self.effective_saturation(),
                     cur_contrast.3,
                 );
             }
@@ -862,8 +994,17 @@ fn auto_contrast(frame: &Frame) -> (f32, f32) {
 
     vals.sort_unstable();
 
-    let p01 = vals[(vals.len() as f32 * 0.01) as usize];
+    let n = vals.len();
+    let p01 = (vals[(n as f32 * 0.01) as usize]).max(2);
+    let p50 = vals[n / 2];
+    let p99 = vals[(n as f32 * 0.99) as usize];
     let max_val = *vals.last().unwrap() as f32;
-    let vmax = (max_val * 0.0010).max(p01 as f32 + 1.0);
+    let vmax = (max_val * 0.0010).max(p01 as f32 + 5.0);
+    eprintln!(
+        "auto_contrast: n={n} sat_filtered={:.1}% p01={p01} p50={p50} p99={p99} max={max_val:.0} → vmin={:.1} vmax={:.1}",
+        n as f32 / frame.pixels.len() as f32 * 100.0,
+        p01 as f32,
+        vmax,
+    );
     (p01 as f32, vmax)
 }

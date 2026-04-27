@@ -44,6 +44,7 @@ impl MonitorPrefetcher {
         vmin: f32,
         vmax: f32,
         gamma_correction: f32,
+        saturation: u16,
         colormap: Colormap,
     ) {
         if new_series {
@@ -67,7 +68,7 @@ impl MonitorPrefetcher {
                     vmin,
                     vmax,
                     gamma_correction,
-                    frame.saturation_value,
+                    saturation,
                     colormap,
                 );
                 let image = ColorImage::from_rgba_unmultiplied(

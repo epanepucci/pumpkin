@@ -16,6 +16,7 @@ struct Request {
     vmin: f32,
     vmax: f32,
     gamma_correction: f32,
+    saturation: u16,
     colormap: Colormap,
 }
 
@@ -46,10 +47,10 @@ pub struct HDF5Prefetcher {
 }
 
 impl HDF5Prefetcher {
-    pub fn new(master_path: PathBuf, saturation: u16) -> Self {
+    pub fn new(master_path: PathBuf) -> Self {
         let (req_tx, req_rx) = mpsc::sync_channel(32);
         let (res_tx, res_rx) = mpsc::sync_channel(8);
-        std::thread::spawn(move || reader_thread(master_path, saturation, req_rx, res_tx));
+        std::thread::spawn(move || reader_thread(master_path, req_rx, res_tx));
         Self { cached: HashMap::new(), in_flight: HashSet::new(), generation: 0, req_tx, res_rx }
     }
 
@@ -58,11 +59,11 @@ impl HDF5Prefetcher {
     }
 
     /// Request background load+tone-map for `index` if not already cached or in-flight.
-    pub fn request(&mut self, index: usize, vmin: f32, vmax: f32, gamma_correction: f32, colormap: Colormap) {
+    pub fn request(&mut self, index: usize, vmin: f32, vmax: f32, gamma_correction: f32, saturation: u16, colormap: Colormap) {
         if self.cached.contains_key(&index) || self.in_flight.contains(&index) {
             return;
         }
-        let req = Request { generation: self.generation, index, vmin, vmax, gamma_correction, colormap };
+        let req = Request { generation: self.generation, index, vmin, vmax, gamma_correction, saturation, colormap };
         if self.req_tx.try_send(req).is_ok() {
             self.in_flight.insert(index);
         }
@@ -104,7 +105,6 @@ impl HDF5Prefetcher {
 
 fn reader_thread(
     path: PathBuf,
-    saturation: u16,
     rx: mpsc::Receiver<Request>,
     tx: mpsc::SyncSender<Ready>,
 ) {
@@ -126,7 +126,7 @@ fn reader_thread(
                     req.vmin,
                     req.vmax,
                     req.gamma_correction,
-                    saturation,
+                    req.saturation,
                     req.colormap,
                 );
                 let image = ColorImage::from_rgba_unmultiplied(
