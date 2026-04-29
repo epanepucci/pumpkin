@@ -313,8 +313,8 @@ impl PumpkinApp {
             .show(ctx, |ui| {
                 ui.heading("Keyboard Shortcuts");
                 egui::Grid::new("help_grid").num_columns(2).spacing([20.0, 8.0]).show(ui, |ui| {
-                    ui.label("0"); ui.label("Fit image to view"); ui.end_row();
-                    ui.label("1"); ui.label("Zoom to 1:1"); ui.end_row();
+                    ui.label("Ctrl-0"); ui.label("Fit image to view"); ui.end_row();
+                    ui.label("Ctrl-1"); ui.label("Zoom to 1:1"); ui.end_row();
                     ui.label("Left / Right"); ui.label("Previous / Next frame"); ui.end_row();
                     ui.label("Ctrl+O"); ui.label("Open HDF5 master"); ui.end_row();
                     ui.label("Ctrl+G"); ui.label("Go to frame number"); ui.end_row();
@@ -887,16 +887,22 @@ impl eframe::App for PumpkinApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
+        let mouse_over_viewport = ctx.input(|i| {
+            i.pointer.hover_pos().map_or(false, |p| self.last_viewport_rect.contains(p))
+        });
+
         if let Some(ref series) = self.hdf5_series {
             let total = series.total_frames;
             let old_index = self.hdf5_frame_index;
 
-            if ctx.input_mut(|i| i.consume_shortcut(&previous_image_shortcut)) && self.hdf5_frame_index > 0 {
-                self.hdf5_frame_index -= 1;
-            }
+            if mouse_over_viewport {
+                if ctx.input_mut(|i| i.consume_shortcut(&previous_image_shortcut)) && self.hdf5_frame_index > 0 {
+                    self.hdf5_frame_index -= 1;
+                }
 
-            if ctx.input_mut(|i| i.consume_shortcut(&next_image_shortcut)) && self.hdf5_frame_index + 1 < total {
-                self.hdf5_frame_index += 1;
+                if ctx.input_mut(|i| i.consume_shortcut(&next_image_shortcut)) && self.hdf5_frame_index + 1 < total {
+                    self.hdf5_frame_index += 1;
+                }
             }
 
             if self.hdf5_frame_index != old_index {
