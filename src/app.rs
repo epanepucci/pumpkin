@@ -78,6 +78,8 @@ pub struct PumpkinApp {
 
     saturation_override_enabled: bool,
     saturation_override_value: u16,
+    /// Original saturation_value from the file/detector, before any override.
+    file_saturation_value: Option<u16>,
 
     /// Cached histogram counts. Invalidated when frame, saturation, or bin count changes.
     histogram_cache: Option<(usize, u16, usize, Vec<u32>)>, // (frame_ptr, saturation, n_bins, counts)
@@ -160,6 +162,7 @@ impl PumpkinApp {
             prefetch_contrast: (f32::NAN, f32::NAN, f32::NAN, Colormap::Inferno),
             saturation_override_enabled: true,
             saturation_override_value: 32767,
+            file_saturation_value: None,
             histogram_cache: None,
             show_goto_frame: false,
             goto_frame_input: "0".to_string(),
@@ -215,7 +218,7 @@ impl PumpkinApp {
         if self.saturation_override_enabled {
             self.saturation_override_value
         } else {
-            self.frame.as_ref().map(|f| f.saturation_value).unwrap_or(u16::MAX)
+            self.file_saturation_value.unwrap_or(u16::MAX)
         }
     }
 
@@ -334,6 +337,16 @@ impl PumpkinApp {
 
     /// Update displayed frame and auto-contrast without touching pending_fit.
     fn display_frame(&mut self, frame: Arc<Frame>) {
+        // Record the raw file saturation before any user override.
+        self.file_saturation_value = Some(frame.saturation_value);
+        let sat = self.effective_saturation();
+        let frame = if frame.saturation_value != sat {
+            let mut f = (*frame).clone();
+            f.saturation_value = sat;
+            Arc::new(f)
+        } else {
+            frame
+        };
         if self.contrast.auto {
             let (vmin, vmax) = auto_contrast(&frame);
             self.contrast.vmin = vmin;
@@ -576,6 +589,10 @@ impl PumpkinApp {
             }
             self.schedule_hdf5_prefetch();
             self.image_texture = crate::image_render::ImageTexture::default();
+            let sat = self.effective_saturation();
+            if let Some(ref mut frame) = self.frame {
+                Arc::make_mut(frame).saturation_value = sat;
+            }
         }
 
         // Histogram
@@ -1030,7 +1047,7 @@ fn auto_contrast_region(frame: &Frame, view: &ViewState, viewport: egui::Rect) -
 
     vals.sort_unstable();
     let n = vals.len();
-    let vmin = (vals[(n as f32 * 0.001) as usize]).max(2);
+    let vmin = vals[(n as f32 * 0.001) as usize];
     let max_val = *vals.last().unwrap() as f32;
     let vmax = (max_val * 0.010).max(5.0);
     (vmin as f32, vmax)
