@@ -6,9 +6,11 @@ use crate::frame::Frame;
 #[derive(Clone, Copy, PartialEq, Default)]
 pub enum Colormap {
     #[default]
+    Inferno,
+    Viridis,
+    Plasma,
     Standard,
     Grayscale,
-    Inferno,
     Rocket,
     Heat,
 }
@@ -16,16 +18,18 @@ pub enum Colormap {
 impl Colormap {
     pub fn label(self) -> &'static str {
         match self {
+            Colormap::Inferno => "Inferno",
+            Colormap::Viridis => "Viridis",
+            Colormap::Plasma => "Plasma",
             Colormap::Standard => "Standard",
             Colormap::Grayscale => "Grayscale",
-            Colormap::Inferno => "Inferno",
             Colormap::Rocket => "Rocket",
             Colormap::Heat => "Heat",
         }
     }
 
     pub const ALL: &'static [Colormap] =
-        &[Colormap::Standard, Colormap::Grayscale, Colormap::Inferno, Colormap::Rocket, Colormap::Heat];
+        &[Colormap::Inferno, Colormap::Viridis, Colormap::Plasma, Colormap::Standard, Colormap::Grayscale, Colormap::Rocket, Colormap::Heat];
 
     /// Sample the colormap at `t` ∈ [0, 1] and return an RGB triple.
     pub fn apply(self, t: f32) -> [u8; 3] {
@@ -37,15 +41,39 @@ impl Colormap {
 
 /// black → purple → red → orange → yellow
 static INFERNO: &[(f32, [u8; 3])] = &[
-    (0.000, [0, 0, 4]),
-    (0.125, [40, 11, 84]),
-    (0.250, [101, 21, 110]),
-    (0.375, [159, 42, 99]),
-    (0.500, [212, 72, 66]),
-    (0.625, [245, 125, 21]),
-    (0.750, [250, 182, 55]),
-    (0.875, [252, 230, 150]),
+    (0.000, [0, 0, 3]),
+    (0.125, [32, 12, 74]),
+    (0.250, [87, 15, 109]),
+    (0.375, [137, 34, 105]),
+    (0.500, [187, 55, 84]),
+    (0.625, [228, 90, 49]),
+    (0.750, [249, 142, 9]),
+    (0.875, [248, 203, 52]),
     (1.000, [252, 255, 164]),
+];
+
+static VIRIDIS: &[(f32, [u8; 3])] = &[
+    (0.000, [68, 1, 84]),
+    (0.125, [71, 44, 122]),
+    (0.250, [59, 81, 139]),
+    (0.375, [44, 113, 142]),
+    (0.500, [33, 144, 141]),
+    (0.625, [39, 173, 129]),
+    (0.750, [92, 200, 99]),
+    (0.875, [170, 220, 50]),
+    (1.000, [253, 231, 37]),
+];
+
+static PLASMA: &[(f32, [u8; 3])] = &[
+    (0.000, [13, 8, 135]),
+    (0.125, [75, 3, 161]),
+    (0.250, [126, 3, 168]),
+    (0.375, [168, 34, 150]),
+    (0.500, [203, 70, 121]),
+    (0.625, [229, 107, 93]),
+    (0.750, [248, 148, 65]),
+    (0.875, [253, 195, 40]),
+    (1.000, [240, 249, 33]),
 ];
 
 /// black → dark red → pink → white
@@ -187,6 +215,9 @@ pub(crate) fn tone_map(
 #[inline]
 fn apply_colormap(t: f32, colormap: Colormap) -> [u8; 3] {
     match colormap {
+        Colormap::Inferno => lerp_colormap(t, INFERNO),
+        Colormap::Viridis => lerp_colormap(t, VIRIDIS),
+        Colormap::Plasma => lerp_colormap(t, PLASMA),
         Colormap::Standard => {
             let g = (t * 255.0) as u8;
             [g, g, g]
@@ -195,7 +226,6 @@ fn apply_colormap(t: f32, colormap: Colormap) -> [u8; 3] {
             let g = ((1.0 - t) * 255.0) as u8;
             [g, g, g]
         }
-        Colormap::Inferno => lerp_colormap(t, INFERNO),
         Colormap::Rocket => lerp_colormap(t, ROCKET),
         Colormap::Heat => lerp_colormap(t, HEAT),
     }

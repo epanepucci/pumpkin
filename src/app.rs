@@ -521,13 +521,24 @@ impl PumpkinApp {
 
         ui.separator();
         ui.heading("Contrast");
-        let run_auto = ui.horizontal(|ui| {
+        let (run_auto, run_region) = ui.horizontal(|ui| {
             ui.checkbox(&mut self.contrast.auto, "Auto");
-            ui.add_enabled(self.frame.is_some(), egui::Button::new("Run")).clicked()
+            let run = ui.add_enabled(self.frame.is_some(), egui::Button::new("Run")).clicked();
+            let region = ui.add_enabled(self.frame.is_some(), egui::Button::new("Region"))
+                .on_hover_text("Auto contrast from visible region")
+                .clicked();
+            (run, region)
         }).inner;
         if run_auto {
             if let Some(frame) = self.frame.clone() {
                 let (vmin, vmax) = auto_contrast(&frame);
+                self.contrast.vmin = vmin;
+                self.contrast.vmax = vmax;
+            }
+        }
+        if run_region {
+            if let Some(frame) = self.frame.clone() {
+                let (vmin, vmax) = auto_contrast_region(&frame, &self.view, self.last_viewport_rect);
                 self.contrast.vmin = vmin;
                 self.contrast.vmax = vmax;
             }
@@ -912,11 +923,13 @@ impl eframe::App for PumpkinApp {
             let total = self.monitor_frames.len();
             let old_index = self.monitor_frame_index;
 
-            if ctx.input_mut(|i| i.consume_shortcut(&previous_image_shortcut)) && self.monitor_frame_index > 0 {
-                self.monitor_frame_index -= 1;
-            }
-            if ctx.input_mut(|i| i.consume_shortcut(&next_image_shortcut)) && self.monitor_frame_index + 1 < total {
-                self.monitor_frame_index += 1;
+            if mouse_over_viewport {
+                if ctx.input_mut(|i| i.consume_shortcut(&previous_image_shortcut)) && self.monitor_frame_index > 0 {
+                    self.monitor_frame_index -= 1;
+                }
+                if ctx.input_mut(|i| i.consume_shortcut(&next_image_shortcut)) && self.monitor_frame_index + 1 < total {
+                    self.monitor_frame_index += 1;
+                }
             }
 
             if self.monitor_frame_index != old_index {
@@ -990,6 +1003,37 @@ impl eframe::App for PumpkinApp {
             self.show_viewport(ctx, ui);
         });
     }
+}
+
+/// Same algorithm as `auto_contrast` but restricted to the pixels currently
+/// visible in the viewport. Falls back to the full-frame version if the
+/// visible region is empty or entirely saturated.
+fn auto_contrast_region(frame: &Frame, view: &ViewState, viewport: egui::Rect) -> (f32, f32) {
+    let x0 = view.offset.x.max(0.0) as u32;
+    let y0 = view.offset.y.max(0.0) as u32;
+    let x1 = (view.offset.x + viewport.width() / view.zoom).min(frame.width as f32) as u32;
+    let y1 = (view.offset.y + viewport.height() / view.zoom).min(frame.height as f32) as u32;
+
+    if x1 <= x0 || y1 <= y0 {
+        return auto_contrast(frame);
+    }
+
+    let sat = frame.saturation_value;
+    let mut vals: Vec<u16> = (y0..y1)
+        .flat_map(|y| (x0..x1).map(move |x| frame.pixels[(y * frame.width + x) as usize]))
+        .filter(|&v| v < sat)
+        .collect();
+
+    if vals.is_empty() {
+        return auto_contrast(frame);
+    }
+
+    vals.sort_unstable();
+    let n = vals.len();
+    let vmin = (vals[(n as f32 * 0.001) as usize]).max(2);
+    let max_val = *vals.last().unwrap() as f32;
+    let vmax = (max_val * 0.010).max(5.0);
+    (vmin as f32, vmax)
 }
 
 /// Compute vmin as the 1st percentile and vmax as 10% of the maximum
