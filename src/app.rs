@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use egui::{CentralPanel, Context, Key, KeyboardShortcut, Modifiers, ScrollArea, SidePanel, Ui};
+use egui_file_dialog::FileDialog;
 use tokio::sync::watch;
 
 use crate::frame::Frame;
@@ -90,6 +91,8 @@ pub struct PumpkinApp {
 
     /// Last folder used to open a file.
     last_location: Option<std::path::PathBuf>,
+
+    file_dialog: FileDialog,
 }
 
 impl PumpkinApp {
@@ -163,6 +166,8 @@ impl PumpkinApp {
             show_help: false,
             show_panel: true,
             last_location: Self::load_last_location(),
+            file_dialog: FileDialog::new()
+                .add_file_filter_extensions("HDF5 master", vec!["h5"]),
         };
         if auto_connect {
             app.connect();
@@ -290,20 +295,10 @@ impl PumpkinApp {
     }
 
     pub fn open_hdf5_dialog(&mut self) {
-        let mut dialog = rfd::FileDialog::new().add_filter("HDF5 master", &["h5"]);
         if let Some(ref loc) = self.last_location {
-            dialog = dialog.set_directory(loc);
+            self.file_dialog.config_mut().initial_directory = loc.clone();
         }
-
-        if let Some(path) = dialog.pick_file() {
-            if let Some(parent) = path.parent() {
-                self.last_location = Some(parent.to_path_buf());
-                self.save_last_location();
-            }
-            if let Err(e) = self.load_hdf5_master(&path) {
-                eprintln!("Failed to open {}: {e}", path.display());
-            }
-        }
+        self.file_dialog.pick_file();
     }
 
     pub fn show_help_window(&mut self, ctx: &Context) {
@@ -966,6 +961,17 @@ impl eframe::App for PumpkinApp {
         // Keep polling while connected.
         if self.connected {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+
+        self.file_dialog.update(ctx);
+        if let Some(path) = self.file_dialog.take_picked() {
+            if let Some(parent) = path.parent() {
+                self.last_location = Some(parent.to_path_buf());
+                self.save_last_location();
+            }
+            if let Err(e) = self.load_hdf5_master(&path) {
+                eprintln!("Failed to open {}: {e}", path.display());
+            }
         }
 
         SidePanel::left("left_panel").resizable(true).default_width(240.0).show_animated(ctx, self.show_panel, |ui| {
