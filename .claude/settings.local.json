@@ -27,7 +27,10 @@
       "Bash(docker rm *)",
       "Bash(nm -D pumpkin-rocky8)",
       "Bash(ldd pumpkin-rocky8 *)",
-      "Bash(awk '{print $1}')"
+      "Bash(awk '{print $1}')",
+      "Bash(cargo search *)",
+      "Bash(cargo info *)",
+      "Bash(cargo remove *)"
     ]
   }
 }
