@@ -88,6 +88,7 @@ pub struct PumpkinApp {
     show_goto_frame: bool,
     goto_frame_input: String,
 
+    lock_zoom: bool,
     show_help: bool,
     show_panel: bool,
 
@@ -166,6 +167,7 @@ impl PumpkinApp {
             histogram_cache: None,
             show_goto_frame: false,
             goto_frame_input: "0".to_string(),
+            lock_zoom: false,
             show_help: false,
             show_panel: true,
             last_location: Self::load_last_location(),
@@ -366,9 +368,11 @@ impl PumpkinApp {
         self.monitor_frames = batch.frames;
 
         if new_series {
-            // Start at the most recent frame and fit to view.
+            // Start at the most recent frame and fit to view (unless zoom is locked).
             self.monitor_frame_index = self.monitor_frames.len().saturating_sub(1);
-            self.pending_fit = true;
+            if !self.lock_zoom {
+                self.pending_fit = true;
+            }
         } else {
             // Keep current index, clamped to valid range.
             self.monitor_frame_index = self.monitor_frame_index.min(self.monitor_frames.len().saturating_sub(1));
@@ -739,6 +743,7 @@ impl PumpkinApp {
         if self.frame.is_some() {
             ui.label(format!("Zoom: {:.2}×", self.view.zoom));
         }
+        ui.checkbox(&mut self.lock_zoom, "Lock zoom").on_hover_text("Prevent auto-fit when a new monitor series arrives");
 
         ui.heading("Connection");
         ui.horizontal(|ui| {
