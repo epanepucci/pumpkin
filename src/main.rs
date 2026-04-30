@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use app::{ContrastState, PumpkinApp};
 use clap::Parser;
-use viewport::OverlaySettings;
+use viewport::{OverlaySettings, ResolutionRing};
 
 use crate::config::Config;
 use crate::image_render::Colormap;
@@ -144,6 +144,15 @@ fn main() -> anyhow::Result<()> {
     }
     if let Some(s) = cfg.resolution_rings.font_scale {
         overlays.ring_font_scale = s;
+    }
+    if let Some(rings) = cfg.rings {
+        overlays.resolution_rings = rings
+            .into_iter()
+            .map(|r| match r.label {
+                Some(label) => ResolutionRing::with_label(r.resolution, label),
+                None => ResolutionRing::new(r.resolution),
+            })
+            .collect();
     }
     if let Some(e) = cfg.beam_center.enabled {
         overlays.show_beam_center = e;

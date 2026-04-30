@@ -169,9 +169,9 @@ fn draw_resolution_rings(
     let stroke = egui::Stroke::new(overlays.ring_stroke_width, overlays.ring_color);
     let font_size = 11.0 * overlays.ring_font_scale;
 
-    for &d_spacing in &overlays.resolution_rings_angstrom {
+    for ring in &overlays.resolution_rings {
         // Bragg: sin(theta) = lambda / (2 * d)
-        let sin_theta = wavelength / (2.0 * d_spacing);
+        let sin_theta = wavelength / (2.0 * ring.d_spacing);
         if sin_theta >= 1.0 {
             continue;
         }
@@ -185,13 +185,12 @@ fn draw_resolution_rings(
 
         painter.circle_stroke(center_screen, radius_screen, stroke);
 
-        // Label the ring with its d-spacing; colour follows the ring colour.
         let label_pos = center_screen + Vec2::new(radius_screen * 0.707, -radius_screen * 0.707);
         if viewport.contains(label_pos) {
             painter.text(
                 label_pos,
                 egui::Align2::LEFT_BOTTOM,
-                format!("{:.2} Å", d_spacing),
+                &ring.label,
                 egui::FontId::proportional(font_size),
                 overlays.ring_color,
             );
@@ -240,6 +239,26 @@ fn draw_pixel_values(painter: &Painter, view: &ViewState, viewport: Rect, frame:
     }
 }
 
+/// A single resolution ring definition.
+#[derive(Clone)]
+pub struct ResolutionRing {
+    /// d-spacing in Ångströms.
+    pub d_spacing: f64,
+    /// Text drawn next to the ring.
+    pub label: String,
+}
+
+impl ResolutionRing {
+    pub fn new(d_spacing: f64) -> Self {
+        Self { d_spacing, label: format!("{d_spacing:.2} Å") }
+    }
+
+    pub fn with_label(d_spacing: f64, label: impl Into<String>) -> Self {
+        let label = format!("{:.2} Å {}", d_spacing, label.into());
+        Self { d_spacing, label: label }
+    }
+}
+
 /// Which overlays to render and how to style them.
 #[derive(Clone)]
 pub struct OverlaySettings {
@@ -248,8 +267,7 @@ pub struct OverlaySettings {
     pub beam_center_stroke_width: f32,
 
     pub show_resolution_rings: bool,
-    /// d-spacings in Angstroms for resolution rings to draw.
-    pub resolution_rings_angstrom: Vec<f64>,
+    pub resolution_rings: Vec<ResolutionRing>,
     pub ring_color: egui::Color32,
     pub ring_stroke_width: f32,
     /// Multiplier applied to ring-label font size.
@@ -264,7 +282,10 @@ impl Default for OverlaySettings {
             beam_center_color: cyan,
             beam_center_stroke_width: 1.5,
             show_resolution_rings: true,
-            resolution_rings_angstrom: vec![10.0, 5.0, 3.0, 2.0, 1.5, 1.0],
+            resolution_rings: [10.0, 5.0, 3.0, 2.0, 1.5, 1.0]
+                .iter()
+                .map(|&d| ResolutionRing::new(d))
+                .collect(),
             ring_color: cyan,
             ring_stroke_width: 1.0,
             ring_font_scale: 1.0,

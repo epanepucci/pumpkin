@@ -38,6 +38,27 @@ pub struct Config {
     pub resolution_rings: RingConfig,
     #[serde(alias = "beam-center")]
     pub beam_center: BeamCenterConfig,
+    /// Explicit ring definitions. When present, supersedes the built-in defaults.
+    /// Each entry requires `resolution` (d-spacing in Å) and optionally `label`.
+    pub rings: Option<Vec<RingEntry>>,
+}
+
+/// One explicit resolution ring from the config file.
+///
+/// ```toml
+/// [[rings]]
+/// resolution = 3.5
+/// label = "ice 3.5"
+///
+/// [[rings]]
+/// resolution = 2.0
+/// ```
+#[derive(Deserialize)]
+pub struct RingEntry {
+    /// d-spacing in Ångströms.
+    pub resolution: f64,
+    /// Text drawn next to the ring. Defaults to "<resolution> Å".
+    pub label: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
