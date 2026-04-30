@@ -29,6 +29,10 @@ use serde::Deserialize;
 pub struct Config {
     pub dcu_url: Option<String>,
     pub poll_period_ms: Option<u64>,
+    /// Directory containing HDF5 filter plugins (e.g. bitshuffle). Overrides
+    /// auto-discovery; still superseded by the HDF5_PLUGIN_PATH env var.
+    #[serde(alias = "hdf5-plugin-path")]
+    pub hdf5_plugin_path: Option<PathBuf>,
     pub contrast: ContrastConfig,
     #[serde(alias = "resolution-rings")]
     pub resolution_rings: RingConfig,

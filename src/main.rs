@@ -45,18 +45,24 @@ struct Args {
 /// that error.  We prefer a directory that actually contains the bitshuffle
 /// plugin (filter 32008, used by DECTRIS EIGER by default) so those files
 /// open without extra configuration.
-fn setup_hdf5_plugin_path() {
+fn setup_hdf5_plugin_path(config_path: Option<&std::path::Path>) {
     if std::env::var("HDF5_PLUGIN_PATH").is_ok() {
         return; // already set by the user — respect it
     }
 
     let plugin_filenames = ["libH5Zbshuf.so", "libhdf5_bshuf.so", "libh5bshuf.so"];
-    let mut candidates = vec![
+
+    // Config-specified path takes priority over auto-discovery candidates.
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(p) = config_path {
+        candidates.push(p.to_string_lossy().into_owned());
+    }
+    candidates.extend([
         "/usr/lib/x86_64-linux-gnu/hdf5/serial/plugins".to_string(),
         "/usr/lib/x86_64-linux-gnu/hdf5/plugins".to_string(),
         "/usr/lib64/hdf5/plugins".to_string(),
         "/usr/local/hdf5/lib/plugin".to_string(),
-    ];
+    ]);
     if let Ok(home) = std::env::var("HOME") {
         candidates.push(format!("{home}/.hdf5/lib/plugin"));
     }
@@ -84,7 +90,6 @@ fn setup_hdf5_plugin_path() {
 }
 
 fn main() -> anyhow::Result<()> {
-    setup_hdf5_plugin_path();
     let args = Args::parse();
 
     // Load config: explicit path → error if missing; default path → silent skip.
@@ -93,11 +98,14 @@ fn main() -> anyhow::Result<()> {
         None => Config::load_default(),
     };
 
-    if let Some(path) = cfg_path {
+    if let Some(path) = &cfg_path {
         eprintln!("Loaded config from: {}", path.display());
     } else {
         eprintln!("No config file found, using defaults.");
     }
+
+    // Must be called before any HDF5 operations and before threads are spawned.
+    setup_hdf5_plugin_path(cfg.hdf5_plugin_path.as_deref());
 
     // CLI args take precedence over config file values.
     let dcu_url_from_cli = args.dcu_url.is_some();
