@@ -30,7 +30,9 @@
       "Bash(awk '{print $1}')",
       "Bash(cargo search *)",
       "Bash(cargo info *)",
-      "Bash(cargo remove *)"
+      "Bash(cargo remove *)",
+      "Bash(rustup target *)",
+      "Bash(rustup toolchain *)"
     ]
   }
 }
