@@ -1006,6 +1006,8 @@ impl eframe::App for PumpkinApp {
 
         self.file_dialog.update(ctx);
         if let Some(path) = self.file_dialog.take_picked() {
+            eprintln!("Loading HDF5: {}", path.display());
+            self.disconnect();
             if let Some(parent) = path.parent() {
                 self.last_location = Some(parent.to_path_buf());
                 self.save_last_location();
