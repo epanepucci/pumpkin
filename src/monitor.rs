@@ -141,6 +141,7 @@ pub fn start_monitor_task(cfg: MonitorConfig) -> watch::Receiver<Option<MonitorB
                 eprintln!("Monitor: fetching {series_id}/{image_id}");
                 match fetch_tiff(&client, &url).await {
                     Ok(mut frame) => {
+                        eprint!("neat, found a frame, I'll pretend I'm showing it");
                         frame.metadata = known_meta.clone();
                         frame.metadata.image_number = Some(image_id as i64);
                         frames.push(Arc::new(frame));

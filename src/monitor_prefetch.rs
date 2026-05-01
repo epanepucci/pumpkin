@@ -4,7 +4,7 @@ use std::sync::{Arc, mpsc};
 use egui::{ColorImage, Context, TextureHandle, TextureOptions};
 
 use crate::frame::Frame;
-use crate::image_render::Colormap;
+use crate::image_render::{Colormap, RadialMode, compute_radial_profile};
 
 struct Ready {
     generation: u64,
@@ -46,6 +46,7 @@ impl MonitorPrefetcher {
         gamma_correction: f32,
         saturation: u16,
         colormap: Colormap,
+        radial_mode: RadialMode,
     ) {
         if new_series {
             self.textures.clear();
@@ -61,6 +62,16 @@ impl MonitorPrefetcher {
             let frame = frame.clone();
             let tx = self.res_tx.clone();
             rayon::spawn(move || {
+                let (profile, cx, cy) = if radial_mode != RadialMode::None {
+                    if let (Some(cx), Some(cy)) = (frame.metadata.beam_center_x, frame.metadata.beam_center_y) {
+                        let p = compute_radial_profile(&frame.pixels, frame.width, frame.height, cx, cy, saturation);
+                        (p, cx as f32, cy as f32)
+                    } else {
+                        (Vec::new(), 0.0f32, 0.0f32)
+                    }
+                } else {
+                    (Vec::new(), 0.0f32, 0.0f32)
+                };
                 let rgba = crate::image_render::tone_map(
                     &frame.pixels,
                     frame.width,
@@ -70,6 +81,10 @@ impl MonitorPrefetcher {
                     gamma_correction,
                     saturation,
                     colormap,
+                    radial_mode,
+                    &profile,
+                    cx,
+                    cy,
                 );
                 let image = ColorImage::from_rgba_unmultiplied(
                     [frame.width as usize, frame.height as usize],

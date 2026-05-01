@@ -4,6 +4,14 @@ use rayon::prelude::*;
 use crate::frame::Frame;
 
 #[derive(Clone, Copy, PartialEq, Default)]
+pub enum RadialMode {
+    #[default]
+    None,
+    Subtract,
+    Divide,
+}
+
+#[derive(Clone, Copy, PartialEq, Default)]
 pub enum Colormap {
     #[default]
     Inferno,
@@ -97,6 +105,42 @@ static HEAT: &[(f32, [u8; 3])] = &[
     (1.00, [255, 0, 0]),
 ];
 
+// --- Radial background profile ---
+
+/// Compute the per-radius median of non-saturated pixels.
+/// Returns a Vec indexed by integer radius (in image pixels from the beam center).
+pub(crate) fn compute_radial_profile(
+    pixels: &[u16],
+    width: u32,
+    height: u32,
+    cx: f64,
+    cy: f64,
+    saturation: u16,
+) -> Vec<f32> {
+    let max_r = (width as f64).hypot(height as f64) as usize + 2;
+    let mut bins: Vec<Vec<u16>> = (0..max_r).map(|_| Vec::new()).collect();
+    for (i, &v) in pixels.iter().enumerate() {
+        if v >= saturation {
+            continue;
+        }
+        let x = (i as u32 % width) as f64;
+        let y = (i as u32 / width) as f64;
+        let r = (x - cx).hypot(y - cy) as usize;
+        if r < max_r {
+            bins[r].push(v);
+        }
+    }
+    bins.par_iter_mut()
+        .map(|bin| {
+            if bin.is_empty() {
+                return 0.0f32;
+            }
+            let mid = bin.len() / 2;
+            *bin.select_nth_unstable(mid).1 as f32
+        })
+        .collect()
+}
+
 // --- Texture management ---
 
 /// Manages the egui texture for the current image frame.
@@ -112,6 +156,7 @@ pub struct ImageTexture {
     last_saturation: u16,
     last_frame_ptr: usize,
     last_colormap: Colormap,
+    last_radial_mode: RadialMode,
 }
 
 impl Default for ImageTexture {
@@ -124,6 +169,7 @@ impl Default for ImageTexture {
             last_saturation: u16::MAX,
             last_frame_ptr: 0,
             last_colormap: Colormap::Standard,
+            last_radial_mode: RadialMode::None,
         }
     }
 }
@@ -142,13 +188,18 @@ impl ImageTexture {
         gamma_correction: f32,
         saturation: u16,
         colormap: Colormap,
+        radial_mode: RadialMode,
+        radial_profile: &[f32],
+        cx: f32,
+        cy: f32,
     ) -> Option<&TextureHandle> {
         let needs_update = frame_ptr != self.last_frame_ptr
             || vmin != self.last_vmin
             || vmax != self.last_vmax
             || gamma_correction != self.last_gamma_correction
             || saturation != self.last_saturation
-            || colormap != self.last_colormap;
+            || colormap != self.last_colormap
+            || radial_mode != self.last_radial_mode;
 
         if needs_update {
             let rgba = tone_map(
@@ -160,6 +211,10 @@ impl ImageTexture {
                 gamma_correction,
                 saturation,
                 colormap,
+                radial_mode,
+                radial_profile,
+                cx,
+                cy,
             );
             let color_image =
                 ColorImage::from_rgba_unmultiplied([frame.width as usize, frame.height as usize], &rgba);
@@ -177,6 +232,7 @@ impl ImageTexture {
             self.last_saturation = saturation;
             self.last_frame_ptr = frame_ptr;
             self.last_colormap = colormap;
+            self.last_radial_mode = radial_mode;
         }
 
         self.handle.as_ref()
@@ -187,27 +243,50 @@ impl ImageTexture {
 
 pub(crate) fn tone_map(
     pixels: &[u16],
-    _w: u32,
+    w: u32,
     _h: u32,
     vmin: f32,
     vmax: f32,
     gamma_correction: f32,
     saturation: u16,
     colormap: Colormap,
+    radial_mode: RadialMode,
+    radial_profile: &[f32],
+    cx: f32,
+    cy: f32,
 ) -> Vec<u8> {
     let range = (vmax - vmin).max(1.0);
+    let use_radial = radial_mode != RadialMode::None && !radial_profile.is_empty();
     let mut rgba = vec![0u8; pixels.len() * 4];
 
-    rgba.par_chunks_mut(4).zip(pixels.par_iter()).for_each(|(chunk, &v)| {
-        if v >= saturation {
-            chunk.copy_from_slice(&[0, 0, 0, 255]);
-        } else {
-            let t = ((v as f32 - vmin) / range).clamp(0.0, 1.0);
+    rgba.par_chunks_mut(4)
+        .zip(pixels.par_iter().enumerate())
+        .for_each(|(chunk, (i, &v))| {
+            if v >= saturation {
+                chunk.copy_from_slice(&[0, 0, 0, 255]);
+                return;
+            }
+            let val = if use_radial {
+                let px = (i as u32 % w) as f32;
+                let py = (i as u32 / w) as f32;
+                let r = (px - cx).hypot(py - cy) as usize;
+                let bg = radial_profile.get(r).copied().unwrap_or(0.0);
+                match radial_mode {
+                    RadialMode::None => v as f32,
+                    RadialMode::Subtract => v as f32 - bg,
+                    RadialMode::Divide => {
+                        if bg > 0.0 { v as f32 / bg } else { v as f32 }
+                    }
+                }
+            } else {
+                v as f32
+            };
+            let t = ((val - vmin) / range).clamp(0.0, 1.0);
             let [r, g, b] = apply_colormap(t, colormap);
-            let att = |c: u8| -> u8 { ((c as f32 / 255.0).powf(gamma_correction) * 255.0).round() as u8 };
+            let att =
+                |c: u8| -> u8 { ((c as f32 / 255.0).powf(gamma_correction) * 255.0).round() as u8 };
             chunk.copy_from_slice(&[att(r), att(g), att(b), 255]);
-        }
-    });
+        });
 
     rgba
 }

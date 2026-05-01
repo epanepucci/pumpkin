@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use egui::{ColorImage, Context, TextureHandle, TextureOptions};
 
 use crate::frame::Frame;
-use crate::image_render::Colormap;
+use crate::image_render::{Colormap, RadialMode, compute_radial_profile};
 
 /// How many frames on either side of the current frame to keep cached in VRAM.
 const CACHE_RADIUS: usize = 3;
@@ -18,6 +18,7 @@ struct Request {
     gamma_correction: f32,
     saturation: u16,
     colormap: Colormap,
+    radial_mode: RadialMode,
 }
 
 struct Ready {
@@ -59,11 +60,11 @@ impl HDF5Prefetcher {
     }
 
     /// Request background load+tone-map for `index` if not already cached or in-flight.
-    pub fn request(&mut self, index: usize, vmin: f32, vmax: f32, gamma_correction: f32, saturation: u16, colormap: Colormap) {
+    pub fn request(&mut self, index: usize, vmin: f32, vmax: f32, gamma_correction: f32, saturation: u16, colormap: Colormap, radial_mode: RadialMode) {
         if self.cached.contains_key(&index) || self.in_flight.contains(&index) {
             return;
         }
-        let req = Request { generation: self.generation, index, vmin, vmax, gamma_correction, saturation, colormap };
+        let req = Request { generation: self.generation, index, vmin, vmax, gamma_correction, saturation, colormap, radial_mode };
         if self.req_tx.try_send(req).is_ok() {
             self.in_flight.insert(index);
         }
@@ -119,6 +120,16 @@ fn reader_thread(
     for req in rx {
         match series.load_frame(req.index) {
             Ok(frame) => {
+                let (profile, cx, cy) = if req.radial_mode != RadialMode::None {
+                    if let (Some(cx), Some(cy)) = (frame.metadata.beam_center_x, frame.metadata.beam_center_y) {
+                        let p = compute_radial_profile(&frame.pixels, frame.width, frame.height, cx, cy, req.saturation);
+                        (p, cx as f32, cy as f32)
+                    } else {
+                        (Vec::new(), 0.0, 0.0)
+                    }
+                } else {
+                    (Vec::new(), 0.0, 0.0)
+                };
                 let rgba = crate::image_render::tone_map(
                     &frame.pixels,
                     frame.width,
@@ -128,6 +139,10 @@ fn reader_thread(
                     req.gamma_correction,
                     req.saturation,
                     req.colormap,
+                    req.radial_mode,
+                    &profile,
+                    cx,
+                    cy,
                 );
                 let image = ColorImage::from_rgba_unmultiplied(
                     [frame.width as usize, frame.height as usize],

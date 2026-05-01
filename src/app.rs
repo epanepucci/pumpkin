@@ -7,7 +7,7 @@ use tokio::sync::watch;
 use crate::frame::Frame;
 use crate::hdf5_loader::Hdf5Series;
 use crate::hdf5_prefetch::HDF5Prefetcher;
-use crate::image_render::{Colormap, ImageTexture};
+use crate::image_render::{Colormap, ImageTexture, RadialMode, compute_radial_profile};
 use crate::monitor::{MonitorBatch, MonitorConfig, start_monitor_task};
 use crate::monitor_prefetch::MonitorPrefetcher;
 use crate::viewport::{self, OverlaySettings, ViewState};
@@ -24,6 +24,7 @@ pub struct ContrastState {
     pub gamma_correction: f32,
     pub histogram_log: bool,
     pub histogram_bins: usize,
+    pub radial_mode: RadialMode,
 }
 
 impl Default for ContrastState {
@@ -36,6 +37,7 @@ impl Default for ContrastState {
             gamma_correction: 1.0,
             histogram_log: true,
             histogram_bins: 256,
+            radial_mode: RadialMode::None,
         }
     }
 }
@@ -74,7 +76,7 @@ pub struct PumpkinApp {
     /// Background prefetcher: loads + tone-maps neighboring frames into VRAM.
     hdf5_prefetcher: Option<HDF5Prefetcher>,
     /// Contrast params last used to schedule prefetch requests; invalidate on change.
-    prefetch_contrast: (f32, f32, f32, Colormap),
+    prefetch_contrast: (f32, f32, f32, Colormap, RadialMode),
 
     saturation_override_enabled: bool,
     saturation_override_value: u16,
@@ -83,6 +85,9 @@ pub struct PumpkinApp {
 
     /// Cached histogram counts. Invalidated when frame, saturation, or bin count changes.
     histogram_cache: Option<(usize, u16, usize, Vec<u32>)>, // (frame_ptr, saturation, n_bins, counts)
+
+    /// Cached azimuthal background profile. Invalidated when frame or saturation changes.
+    radial_profile_cache: Option<(usize, u16, Vec<f32>)>, // (frame_ptr, saturation, profile)
 
     // goto a given frame by number
     show_goto_frame: bool,
@@ -160,11 +165,12 @@ impl PumpkinApp {
             hdf5_master_path: None,
             hdf5_frame_index: 0,
             hdf5_prefetcher: None,
-            prefetch_contrast: (f32::NAN, f32::NAN, f32::NAN, Colormap::Inferno),
+            prefetch_contrast: (f32::NAN, f32::NAN, f32::NAN, Colormap::Inferno, RadialMode::None),
             saturation_override_enabled: true,
             saturation_override_value: 32767,
             file_saturation_value: None,
             histogram_cache: None,
+            radial_profile_cache: None,
             show_goto_frame: false,
             goto_frame_input: "0".to_string(),
             lock_zoom: false,
@@ -240,16 +246,17 @@ impl PumpkinApp {
         };
         let colormap = self.contrast.colormap;
 
+        let radial_mode = self.contrast.radial_mode;
         for offset in 0..=3usize {
             if cur + offset < total {
-                prefetcher.request(cur + offset, vmin, vmax, gamma_correction, saturation, colormap);
+                prefetcher.request(cur + offset, vmin, vmax, gamma_correction, saturation, colormap, radial_mode);
             }
             if offset > 0 && cur >= offset {
-                prefetcher.request(cur - offset, vmin, vmax, gamma_correction, saturation, colormap);
+                prefetcher.request(cur - offset, vmin, vmax, gamma_correction, saturation, colormap, radial_mode);
             }
         }
         prefetcher.evict_distant(cur);
-        self.prefetch_contrast = (vmin, vmax, gamma_correction, colormap);
+        self.prefetch_contrast = (vmin, vmax, gamma_correction, colormap, radial_mode);
     }
 
     pub fn goto_frame(&mut self, ctx: &egui::Context) {
@@ -387,6 +394,7 @@ impl PumpkinApp {
             self.contrast.gamma_correction,
             self.effective_saturation(),
             self.contrast.colormap,
+            self.contrast.radial_mode,
         );
 
         if let Some(frame) = self.monitor_frames.get(self.monitor_frame_index) {
@@ -675,6 +683,13 @@ impl PumpkinApp {
                 }
             });
 
+        ui.horizontal(|ui| {
+            ui.label("Radial BG:");
+            ui.radio_value(&mut self.contrast.radial_mode, RadialMode::None, "None");
+            ui.radio_value(&mut self.contrast.radial_mode, RadialMode::Subtract, "Subtract");
+            ui.radio_value(&mut self.contrast.radial_mode, RadialMode::Divide, "Divide");
+        });
+
         // Colormap preview bar — full panel width, 1 px per sample.
         let bar_height = 16.0;
         let (rect, _) =
@@ -809,10 +824,38 @@ impl PumpkinApp {
                     .map(|h| h.id())
             });
 
+        // Compute (and cache) the azimuthal background profile when radial mode is active.
+        let sat = self.effective_saturation();
+        let frame_ptr = Arc::as_ptr(frame) as usize;
+        let (bcx, bcy) = (
+            frame.metadata.beam_center_x.unwrap_or(0.0) as f32,
+            frame.metadata.beam_center_y.unwrap_or(0.0) as f32,
+        );
+        if self.contrast.radial_mode != RadialMode::None {
+            if let (Some(cx64), Some(cy64)) = (frame.metadata.beam_center_x, frame.metadata.beam_center_y) {
+                let cache_valid = self.radial_profile_cache.as_ref()
+                    .is_some_and(|(p, s, _)| *p == frame_ptr && *s == sat);
+                if !cache_valid {
+                    let profile = compute_radial_profile(
+                        &frame.pixels, frame.width, frame.height, cx64, cy64, sat,
+                    );
+                    self.radial_profile_cache = Some((frame_ptr, sat, profile));
+                }
+            }
+        }
+        let empty_profile: Vec<f32> = Vec::new();
+        let radial_profile: &[f32] = if self.contrast.radial_mode != RadialMode::None {
+            self.radial_profile_cache.as_ref()
+                .filter(|(p, s, _)| *p == frame_ptr && *s == sat)
+                .map(|(_, _, prof)| prof.as_slice())
+                .unwrap_or(&empty_profile)
+        } else {
+            &empty_profile
+        };
+
         let texture_id = match prefetched_id {
             Some(id) => id,
             None => {
-                let frame_ptr = Arc::as_ptr(frame) as usize;
                 let Some(t) = self.image_texture.update(
                     ctx,
                     frame,
@@ -820,8 +863,12 @@ impl PumpkinApp {
                     self.contrast.vmin,
                     self.contrast.vmax,
                     self.contrast.gamma_correction,
-                    self.effective_saturation(),
+                    sat,
                     self.contrast.colormap,
+                    self.contrast.radial_mode,
+                    radial_profile,
+                    bcx,
+                    bcy,
                 ) else {
                     return;
                 };
@@ -971,7 +1018,7 @@ impl eframe::App for PumpkinApp {
         }
 
         // Invalidate prefetcher caches when contrast settings change.
-        let cur_contrast = (self.contrast.vmin, self.contrast.vmax, self.contrast.gamma_correction, self.contrast.colormap);
+        let cur_contrast = (self.contrast.vmin, self.contrast.vmax, self.contrast.gamma_correction, self.contrast.colormap, self.contrast.radial_mode);
         if cur_contrast != self.prefetch_contrast {
             if self.hdf5_series.is_some() {
                 if let Some(ref mut prefetcher) = self.hdf5_prefetcher {
@@ -989,6 +1036,7 @@ impl eframe::App for PumpkinApp {
                     cur_contrast.2,
                     self.effective_saturation(),
                     cur_contrast.3,
+                    cur_contrast.4,
                 );
             }
             // Must update after the block; NaN != NaN would re-trigger every frame otherwise.
