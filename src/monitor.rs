@@ -92,6 +92,7 @@ pub fn start_monitor_task(cfg: MonitorConfig) -> watch::Receiver<Option<MonitorB
 
         let mut known_series_id: Option<u64> = None;
         let mut known_image_count: usize = 0;
+        let mut known_last_image_id: Option<u64> = None;
         let mut known_meta = FrameMetadata::default();
 
         loop {
@@ -115,8 +116,9 @@ pub fn start_monitor_task(cfg: MonitorConfig) -> watch::Receiver<Option<MonitorB
             };
 
             let image_count = image_ids.len();
+            let last_image_id = image_ids.last().copied();
             let new_series = Some(series_id) != known_series_id;
-            let changed = new_series || image_count != known_image_count;
+            let changed = new_series || image_count != known_image_count || last_image_id != known_last_image_id;
             if !changed {
                 tokio::time::sleep(Duration::from_millis(cfg.poll_period_ms)).await;
                 continue;
@@ -152,6 +154,7 @@ pub fn start_monitor_task(cfg: MonitorConfig) -> watch::Receiver<Option<MonitorB
             if !frames.is_empty() {
                 known_series_id = Some(series_id);
                 known_image_count = image_count;
+                known_last_image_id = last_image_id;
                 let _ = tx.send(Some(MonitorBatch { series_id, frames }));
             }
 

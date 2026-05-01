@@ -378,10 +378,14 @@ impl PumpkinApp {
             self.monitor_frame_index = self.monitor_frame_index.min(self.monitor_frames.len().saturating_sub(1));
         }
 
+        // Invalidate stale textures before submitting — frames at the same index position
+        // change on every poll in live mode, so cached textures are never reusable across batches.
+        self.monitor_prefetcher.invalidate();
+
         // Kick off background tone-mapping for all frames in the batch.
         self.monitor_prefetcher.submit_batch(
             &self.monitor_frames,
-            new_series,
+            false, // cache already cleared by invalidate() above
             self.contrast.vmin,
             self.contrast.vmax,
             self.contrast.gamma_correction,
