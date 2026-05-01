@@ -78,7 +78,17 @@ pub fn start_monitor_task(cfg: MonitorConfig) -> watch::Receiver<Option<MonitorB
         {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("Monitor: failed to build HTTP client: {e}");
+                eprintln!("Monitor: failed to build HTTP client");
+                eprintln!("Monitor:   Display : {e}");
+                eprintln!("Monitor:   Debug   : {e:?}");
+                // Walk the source chain.
+                let mut src: Option<&dyn std::error::Error> = std::error::Error::source(&e);
+                let mut depth = 0usize;
+                while let Some(s) = src {
+                    eprintln!("Monitor:   cause[{depth}]: {s}");
+                    src = s.source();
+                    depth += 1;
+                }
                 return;
             }
         };
