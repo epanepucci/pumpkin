@@ -117,9 +117,9 @@ fn main() -> anyhow::Result<()> {
         .or(cfg.poll_period_ms)
         .unwrap_or(500);
 
-    // Only auto-connect when --dcu-url was explicitly given on the CLI,
-    // not when it came from the config file (user can click Connect themselves).
-    let auto_connect = dcu_url_from_cli;
+    // auto_connect: CLI flag wins; then config file; then fall back to
+    // "only if --dcu-url was given on the CLI".
+    let auto_connect = cfg.auto_connect.unwrap_or(dcu_url_from_cli);
 
     // Build initial contrast state from config.
     let mut contrast = ContrastState::default();

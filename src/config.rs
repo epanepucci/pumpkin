@@ -29,6 +29,9 @@ use serde::Deserialize;
 pub struct Config {
     pub dcu_url: Option<String>,
     pub poll_period_ms: Option<u64>,
+    /// Connect to the detector automatically on startup.
+    #[serde(alias = "auto-connect")]
+    pub auto_connect: Option<bool>,
     /// Directory containing HDF5 filter plugins (e.g. bitshuffle). Overrides
     /// auto-discovery; still superseded by the HDF5_PLUGIN_PATH env var.
     #[serde(alias = "hdf5-plugin-path")]
