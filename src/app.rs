@@ -4,7 +4,7 @@ use egui::{CentralPanel, Context, Key, KeyboardShortcut, Modifiers, ScrollArea, 
 use egui_file_dialog::FileDialog;
 use tokio::sync::watch;
 
-use crate::frame::Frame;
+use crate::frame::{Frame, FrameMetadata};
 use crate::hdf5_loader::Hdf5Series;
 use crate::hdf5_prefetch::HDF5Prefetcher;
 use crate::image_render::{Colormap, ImageTexture};
@@ -58,10 +58,19 @@ pub struct PumpkinApp {
     poll_period_ms: u64,
     connected: bool,
 
-    /// Pre-fetched monitor frames (browse mode when ≤4, single frame otherwise).
+    /// Latest frame from the monitor (single entry, replaced on every poll).
     monitor_frames: Vec<Arc<Frame>>,
     monitor_frame_index: usize,
     monitor_series_id: Option<u64>,
+    /// All image IDs available in the current series buffer.
+    monitor_image_ids: Vec<u64>,
+    /// Currently selected image ID in the frame browser pulldown.
+    monitor_selected_id: Option<u64>,
+    /// Detector metadata for the current series (used when fetching on-demand frames).
+    monitor_series_meta: FrameMetadata,
+    /// Channel for on-demand frame fetches triggered from the frame browser.
+    on_demand_tx: std::sync::mpsc::SyncSender<Frame>,
+    on_demand_rx: std::sync::mpsc::Receiver<Frame>,
     /// VRAM cache for tone-mapped monitor frames.
     monitor_prefetcher: MonitorPrefetcher,
 
@@ -140,6 +149,7 @@ impl PumpkinApp {
         contrast: ContrastState,
         overlays: OverlaySettings,
     ) -> Self {
+        let (on_demand_tx, on_demand_rx) = std::sync::mpsc::sync_channel(4);
         let mut app = Self {
             frame: None,
             frame_rx: None,
@@ -155,6 +165,11 @@ impl PumpkinApp {
             monitor_frames: Vec::new(),
             monitor_frame_index: 0,
             monitor_series_id: None,
+            monitor_image_ids: Vec::new(),
+            monitor_selected_id: None,
+            monitor_series_meta: FrameMetadata::default(),
+            on_demand_tx,
+            on_demand_rx,
             monitor_prefetcher: MonitorPrefetcher::new(),
             hdf5_series: None,
             hdf5_master_path: None,
@@ -365,6 +380,9 @@ impl PumpkinApp {
     fn on_monitor_batch(&mut self, batch: MonitorBatch) {
         let new_series = Some(batch.series_id) != self.monitor_series_id;
         self.monitor_series_id = Some(batch.series_id);
+        self.monitor_image_ids = batch.image_ids;
+        self.monitor_series_meta = batch.metadata;
+        self.monitor_selected_id = self.monitor_image_ids.last().copied();
         self.monitor_frames = batch.frames;
 
         if new_series {
@@ -430,6 +448,32 @@ impl PumpkinApp {
             return true;
         }
         false
+    }
+
+    fn fetch_monitor_frame_on_demand(&self, image_id: u64) {
+        let Some(series_id) = self.monitor_series_id else {
+            eprintln!("On-demand: no active series, ignoring request for image {image_id}");
+            return;
+        };
+        let url = format!("{}/monitor/api/1.8.0/images/{}/{}", self.dcu_url, series_id, image_id);
+        eprintln!("On-demand: spawning fetch for {series_id}/{image_id} via {url}");
+        let meta = self.monitor_series_meta.clone();
+        let tx = self.on_demand_tx.clone();
+        tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            eprintln!("On-demand: GET {url}");
+            match crate::monitor::fetch_tiff(&client, &url).await {
+                Ok(mut frame) => {
+                    eprintln!("On-demand: fetch OK for {series_id}/{image_id}, sending to main thread");
+                    frame.metadata = meta;
+                    frame.metadata.image_number = Some(image_id as i64);
+                    if tx.try_send(frame).is_err() {
+                        eprintln!("On-demand: channel full or disconnected, frame {series_id}/{image_id} dropped");
+                    }
+                }
+                Err(e) => eprintln!("On-demand: fetch FAILED {series_id}/{image_id}: {e}"),
+            }
+        });
     }
 
     fn show_left_panel(&mut self, ui: &mut Ui) {
@@ -510,33 +554,42 @@ impl PumpkinApp {
             }
         }
 
-        // Monitor frame browser — shown when the last series has ≤4 images.
-        if self.monitor_frames.len() > 1 {
-            let total = self.monitor_frames.len();
+        // Monitor frame browser.
+        if !self.monitor_image_ids.is_empty() {
             let series_id = self.monitor_series_id.unwrap_or(0);
-            ui.label(format!("Series {series_id} — {total} frames"));
+            ui.label(format!("Series {series_id} — {} images", self.monitor_image_ids.len()));
 
-            let old_index = self.monitor_frame_index;
-            ui.add(egui::Slider::new(&mut self.monitor_frame_index, 0..=total.saturating_sub(1)).text("frame"));
+            let prev_selected = self.monitor_selected_id;
+
+            // Find the position of the currently selected ID in the list.
+            let cur_pos = self.monitor_selected_id
+                .and_then(|id| self.monitor_image_ids.iter().position(|&x| x == id));
 
             ui.horizontal(|ui| {
-                if ui.button("|◀").clicked() {
-                    self.monitor_frame_index = 0;
+                let can_prev = cur_pos.map_or(false, |p| p > 0);
+                let can_next = cur_pos.map_or(false, |p| p + 1 < self.monitor_image_ids.len());
+                if ui.add_enabled(can_prev, egui::Button::new("◀")).clicked() {
+                    self.monitor_selected_id = Some(self.monitor_image_ids[cur_pos.unwrap() - 1]);
                 }
-                if ui.button("◀").clicked() && self.monitor_frame_index > 0 {
-                    self.monitor_frame_index -= 1;
+                if ui.add_enabled(can_next, egui::Button::new("▶")).clicked() {
+                    self.monitor_selected_id = Some(self.monitor_image_ids[cur_pos.unwrap() + 1]);
                 }
-                if ui.button("▶").clicked() && self.monitor_frame_index + 1 < total {
-                    self.monitor_frame_index += 1;
-                }
-                if ui.button("▶|").clicked() {
-                    self.monitor_frame_index = total.saturating_sub(1);
-                }
+                egui::ComboBox::from_label("Frame")
+                    .selected_text(
+                        self.monitor_selected_id.map_or("—".to_string(), |id| id.to_string()),
+                    )
+                    .show_ui(ui, |ui| {
+                        for &id in self.monitor_image_ids.iter().rev() {
+                            ui.selectable_value(&mut self.monitor_selected_id, Some(id), id.to_string());
+                        }
+                    });
             });
 
-            if self.monitor_frame_index != old_index {
-                let frame = self.monitor_frames[self.monitor_frame_index].clone();
-                self.display_frame(frame);
+            if self.monitor_selected_id != prev_selected {
+                eprintln!("Frame browser: selection changed from {:?} to {:?}", prev_selected, self.monitor_selected_id);
+                if let Some(id) = self.monitor_selected_id {
+                    self.fetch_monitor_frame_on_demand(id);
+                }
             }
         }
 
@@ -945,23 +998,6 @@ impl eframe::App for PumpkinApp {
             if self.hdf5_frame_index != old_index {
                 self.load_hdf5_frame(self.hdf5_frame_index);
             }
-        } else if self.monitor_frames.len() > 1 {
-            let total = self.monitor_frames.len();
-            let old_index = self.monitor_frame_index;
-
-            if mouse_over_viewport {
-                if ctx.input_mut(|i| i.consume_shortcut(&previous_image_shortcut)) && self.monitor_frame_index > 0 {
-                    self.monitor_frame_index -= 1;
-                }
-                if ctx.input_mut(|i| i.consume_shortcut(&next_image_shortcut)) && self.monitor_frame_index + 1 < total {
-                    self.monitor_frame_index += 1;
-                }
-            }
-
-            if self.monitor_frame_index != old_index {
-                let frame = self.monitor_frames[self.monitor_frame_index].clone();
-                self.display_frame(frame);
-            }
         }
 
         // Poll prefetchers and upload any completed textures.
@@ -1000,6 +1036,14 @@ impl eframe::App for PumpkinApp {
         }
 
         if self.poll_new_frame() {
+            ctx.request_repaint();
+        }
+
+        // Receive on-demand frames requested from the frame browser pulldown.
+        if let Ok(frame) = self.on_demand_rx.try_recv() {
+            eprintln!("On-demand: received frame, displaying image #{:?}", frame.metadata.image_number);
+            self.monitor_prefetcher.invalidate();
+            self.display_frame(Arc::new(frame));
             ctx.request_repaint();
         }
 

@@ -42,13 +42,15 @@ impl MonitorConfig {
 }
 
 /// Frames delivered to the app for the current series.
-///
-/// When the last series has ≤4 images all are pre-fetched (browse mode).
-/// When >4 images only the latest frame is included (live mode).
 #[derive(Clone)]
 pub struct MonitorBatch {
     pub series_id: u64,
+    /// The single latest frame fetched this poll.
     pub frames: Vec<Arc<Frame>>,
+    /// All image IDs currently available in the series buffer.
+    pub image_ids: Vec<u64>,
+    /// Detector configuration metadata for this series.
+    pub metadata: FrameMetadata,
 }
 
 #[allow(dead_code)]
@@ -133,9 +135,7 @@ pub fn start_monitor_task(cfg: MonitorConfig) -> watch::Receiver<Option<MonitorB
                 known_meta.series_id = Some(series_id as i64);
             }
 
-            // Fetch all frames when ≤4 (browse mode), only the latest when >4.
-            let ids_to_fetch: Vec<u64> =
-                if image_count <= 4 { image_ids.clone() } else { vec![*image_ids.last().unwrap()] };
+            let ids_to_fetch: Vec<u64> = vec![*image_ids.last().unwrap()];
 
             let mut frames = Vec::with_capacity(ids_to_fetch.len());
             for &image_id in &ids_to_fetch {
@@ -155,7 +155,12 @@ pub fn start_monitor_task(cfg: MonitorConfig) -> watch::Receiver<Option<MonitorB
                 known_series_id = Some(series_id);
                 known_image_count = image_count;
                 known_last_image_id = last_image_id;
-                let _ = tx.send(Some(MonitorBatch { series_id, frames }));
+                let _ = tx.send(Some(MonitorBatch {
+                    series_id,
+                    frames,
+                    image_ids: image_ids.clone(),
+                    metadata: known_meta.clone(),
+                }));
             }
 
             tokio::time::sleep(Duration::from_millis(cfg.poll_period_ms)).await;
@@ -243,7 +248,7 @@ async fn fetch_buffer_list(client: &reqwest::Client, url: &str) -> Result<Vec<(u
     Ok(result)
 }
 
-async fn fetch_tiff(client: &reqwest::Client, url: &str) -> Result<Frame> {
+pub(crate) async fn fetch_tiff(client: &reqwest::Client, url: &str) -> Result<Frame> {
     let resp = client.get(url).send().await.context("GET image")?;
     if !resp.status().is_success() {
         anyhow::bail!("image HTTP {}", resp.status());
