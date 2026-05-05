@@ -1282,13 +1282,11 @@ fn auto_contrast(frame: &Frame) -> (f32, f32) {
     vals.sort_unstable();
 
     let n = vals.len();
-    let p01 = (vals[(n as f32 * 0.01) as usize]).max(2);
-    let p50 = vals[n / 2];
-    let p99 = vals[(n as f32 * 0.99) as usize];
+    let p01 = vals[(n as f32 * 0.001) as usize];
     let max_val = *vals.last().unwrap() as f32;
-    let vmax = (max_val * 0.0010).max(p01 as f32 + 5.0);
+    let vmax = (max_val * 0.010).max(p01 as f32 + 5.0);
     eprintln!(
-        "auto_contrast: n={n} sat_filtered={:.1}% p01={p01} p50={p50} p99={p99} max={max_val:.0} → vmin={:.1} vmax={:.1}",
+        "auto_contrast: n={n} sat_filtered={:.1}% p01={p01} max={max_val:.0} → vmin={:.1} vmax={:.1}",
         n as f32 / frame.pixels.len() as f32 * 100.0,
         p01 as f32,
         vmax,
