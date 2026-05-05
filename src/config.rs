@@ -40,6 +40,10 @@ pub struct Config {
     /// A random PNG from this folder is chosen each launch.
     #[serde(alias = "splash-folder")]
     pub splash_folder: Option<PathBuf>,
+    /// Global UI scale factor (pixels per point). Default is 1.0.
+    /// Increase for high-DPI displays or larger widgets; decrease to fit more on screen.
+    #[serde(alias = "ui-scale")]
+    pub ui_scale: Option<f32>,
     pub contrast: ContrastConfig,
     #[serde(alias = "resolution-rings")]
     pub resolution_rings: RingConfig,

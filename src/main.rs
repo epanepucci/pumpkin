@@ -181,11 +181,15 @@ fn main() -> anyhow::Result<()> {
     };
 
     let splash_folder = cfg.splash_folder.clone();
+    let ui_scale = cfg.ui_scale;
 
     eframe::run_native(
         "pumpkin",
         native_options,
         Box::new(move |cc| {
+            if let Some(scale) = ui_scale {
+                cc.egui_ctx.set_pixels_per_point(scale);
+            }
             Ok(Box::new(PumpkinApp::new(cc, dcu_url, poll_period_ms, auto_connect, contrast, overlays, splash_folder)))
         }),
     )
