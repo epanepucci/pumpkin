@@ -34,7 +34,8 @@
       "Bash(rustup target *)",
       "Bash(rustup toolchain *)",
       "Bash(xargs ls *)",
-      "Bash(cargo doc *)"
+      "Bash(cargo doc *)",
+      "Bash(git *)"
     ]
   }
 }

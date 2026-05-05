@@ -101,6 +101,8 @@ pub struct PumpkinApp {
     show_help: bool,
     show_panel: bool,
 
+    start_time: std::time::Instant,
+
     splash_folder: Option<std::path::PathBuf>,
     splash_texture: Option<egui::TextureHandle>,
     splash_loaded: bool,
@@ -190,6 +192,7 @@ impl PumpkinApp {
             lock_zoom: false,
             show_help: false,
             show_panel: true,
+            start_time: std::time::Instant::now(),
             splash_folder,
             splash_texture: None,
             splash_loaded: false,
@@ -201,6 +204,27 @@ impl PumpkinApp {
             app.connect();
         }
         app
+    }
+
+    fn format_uptime(elapsed: std::time::Duration) -> String {
+        let secs = elapsed.as_secs();
+        if secs < 60 {
+            format!("{secs}s")
+        } else if secs < 3600 {
+            format!("{}m", secs / 60)
+        } else if secs < 86400 {
+            let h = secs / 3600;
+            let m = (secs % 3600) / 60;
+            format!("{h}h {m}m")
+        } else if secs < 7 * 86400 {
+            let d = secs / 86400;
+            let h = (secs % 86400) / 3600;
+            format!("{d}d {h}h")
+        } else {
+            let w = secs / (7 * 86400);
+            let d = (secs % (7 * 86400)) / 86400;
+            format!("{w}w {d}d")
+        }
     }
 
     fn pick_random_png(dir: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -406,6 +430,9 @@ impl PumpkinApp {
                 });
 
                 ui.add_space(10.0);
+                ui.separator();
+                ui.label(format!("Pumpkin v{}", env!("APP_VERSION")));
+                ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.button("Close").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                         self.show_help = false;
@@ -907,7 +934,7 @@ impl PumpkinApp {
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                ui.label(format!("Uptime {}", Self::format_uptime(self.start_time.elapsed())));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.link("Show Shortcuts (?)").clicked() {
                         self.show_help = true;
