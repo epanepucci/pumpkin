@@ -340,6 +340,7 @@ impl PumpkinApp {
                     ui.label("Ctrl+G"); ui.label("Go to frame number"); ui.end_row();
                     ui.label("Ctrl+Q"); ui.label("Quit"); ui.end_row();
                     ui.label("Tab"); ui.label("Hide / show side panel"); ui.end_row();
+                    ui.label("F11"); ui.label("Toggle fullscreen"); ui.end_row();
                     ui.label("?"); ui.label("Show this help"); ui.end_row();
                 });
 
@@ -961,6 +962,7 @@ impl eframe::App for PumpkinApp {
         let zoom11_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num1);
         let help_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Questionmark);
         let panel_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Tab);
+        let fullscreen_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F11);
 
         if ctx.input_mut(|i| i.consume_shortcut(&help_shortcut)) {
             self.show_help = !self.show_help;
@@ -968,6 +970,11 @@ impl eframe::App for PumpkinApp {
 
         if ctx.input_mut(|i| i.consume_shortcut(&panel_shortcut)) {
             self.show_panel = !self.show_panel;
+        }
+
+        if ctx.input_mut(|i| i.consume_shortcut(&fullscreen_shortcut)) {
+            let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
         }
 
         if self.show_help {
