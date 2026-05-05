@@ -180,11 +180,13 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
+    let splash_folder = cfg.splash_folder.clone();
+
     eframe::run_native(
         "pumpkin",
         native_options,
         Box::new(move |cc| {
-            Ok(Box::new(PumpkinApp::new(cc, dcu_url, poll_period_ms, auto_connect, contrast, overlays)))
+            Ok(Box::new(PumpkinApp::new(cc, dcu_url, poll_period_ms, auto_connect, contrast, overlays, splash_folder)))
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;

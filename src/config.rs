@@ -36,6 +36,10 @@ pub struct Config {
     /// auto-discovery; still superseded by the HDF5_PLUGIN_PATH env var.
     #[serde(alias = "hdf5-plugin-path")]
     pub hdf5_plugin_path: Option<PathBuf>,
+    /// Directory containing PNG images shown as splash art when no image is loaded.
+    /// A random PNG from this folder is chosen each launch.
+    #[serde(alias = "splash-folder")]
+    pub splash_folder: Option<PathBuf>,
     pub contrast: ContrastConfig,
     #[serde(alias = "resolution-rings")]
     pub resolution_rings: RingConfig,

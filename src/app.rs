@@ -101,6 +101,10 @@ pub struct PumpkinApp {
     show_help: bool,
     show_panel: bool,
 
+    splash_folder: Option<std::path::PathBuf>,
+    splash_texture: Option<egui::TextureHandle>,
+    splash_loaded: bool,
+
     /// Last folder used to open a file.
     last_location: Option<std::path::PathBuf>,
 
@@ -148,6 +152,7 @@ impl PumpkinApp {
         auto_connect: bool,
         contrast: ContrastState,
         overlays: OverlaySettings,
+        splash_folder: Option<std::path::PathBuf>,
     ) -> Self {
         let (on_demand_tx, on_demand_rx) = std::sync::mpsc::sync_channel(4);
         let mut app = Self {
@@ -185,6 +190,9 @@ impl PumpkinApp {
             lock_zoom: false,
             show_help: false,
             show_panel: true,
+            splash_folder,
+            splash_texture: None,
+            splash_loaded: false,
             last_location: Self::load_last_location(),
             file_dialog: FileDialog::new()
                 .add_file_filter_extensions("HDF5 master", vec!["h5"]),
@@ -193,6 +201,59 @@ impl PumpkinApp {
             app.connect();
         }
         app
+    }
+
+    fn pick_random_png(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        let mut pngs: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .ok()?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("png"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        if pngs.is_empty() {
+            return None;
+        }
+        pngs.sort();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        Some(pngs[nanos as usize % pngs.len()].clone())
+    }
+
+    fn decode_splash_png(bytes: &[u8]) -> egui::ColorImage {
+        let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+        let mut reader = decoder.read_info().expect("splash PNG info");
+        let mut buf = vec![0u8; reader.output_buffer_size().expect("splash PNG buffer size")];
+        let info = reader.next_frame(&mut buf).expect("splash PNG frame");
+        let raw = &buf[..info.buffer_size()];
+        let width = info.width as usize;
+        let height = info.height as usize;
+        let pixels: Vec<egui::Color32> = match info.color_type {
+            png::ColorType::Rgb => raw
+                .chunks_exact(3)
+                .map(|c| egui::Color32::from_rgb(c[0], c[1], c[2]))
+                .collect(),
+            png::ColorType::Rgba => raw
+                .chunks_exact(4)
+                .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                .collect(),
+            png::ColorType::Grayscale => raw
+                .iter()
+                .map(|&v| egui::Color32::from_rgb(v, v, v))
+                .collect(),
+            png::ColorType::GrayscaleAlpha => raw
+                .chunks_exact(2)
+                .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[0], c[0], c[1]))
+                .collect(),
+            t => panic!("unsupported splash PNG color type: {t:?}"),
+        };
+        egui::ColorImage::new([width, height], pixels)
     }
 
     pub fn load_hdf5_master(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
@@ -863,13 +924,40 @@ impl PumpkinApp {
         let response = ui.allocate_rect(available, egui::Sense::click_and_drag());
 
         let Some(ref frame) = self.frame.clone() else {
-            ui.painter().text(
-                available.center(),
-                egui::Align2::CENTER_CENTER,
-                "No image — connect to detector or open a TIFF file",
-                egui::FontId::proportional(16.0),
-                egui::Color32::GRAY,
-            );
+            if !self.splash_loaded {
+                self.splash_loaded = true;
+                if let Some(ref dir) = self.splash_folder.clone() {
+                    if let Some(path) = Self::pick_random_png(dir) {
+                        match std::fs::read(&path) {
+                            Ok(bytes) => {
+                                let image = Self::decode_splash_png(&bytes);
+                                self.splash_texture = Some(ctx.load_texture(
+                                    "splash",
+                                    image,
+                                    egui::TextureOptions::LINEAR,
+                                ));
+                            }
+                            Err(e) => eprintln!("splash: cannot read {}: {e}", path.display()),
+                        }
+                    } else {
+                        eprintln!("splash: no PNG files found in {}", dir.display());
+                    }
+                }
+            }
+            if let Some(ref texture) = self.splash_texture {
+                let tex_size = texture.size_vec2();
+                let scale = (available.width() / tex_size.x)
+                    .min(available.height() / tex_size.y)
+                    .min(1.0);
+                let draw_size = tex_size * scale;
+                let draw_rect = egui::Rect::from_center_size(available.center(), draw_size);
+                ui.painter().image(
+                    texture.id(),
+                    draw_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
             return;
         };
 
