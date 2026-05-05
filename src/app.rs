@@ -100,6 +100,7 @@ pub struct PumpkinApp {
     lock_zoom: bool,
     show_help: bool,
     show_panel: bool,
+    show_actions: bool,
 
     start_time: std::time::Instant,
 
@@ -192,6 +193,7 @@ impl PumpkinApp {
             lock_zoom: false,
             show_help: false,
             show_panel: true,
+            show_actions: false,
             start_time: std::time::Instant::now(),
             splash_folder,
             splash_texture: None,
@@ -360,7 +362,6 @@ impl PumpkinApp {
         egui::Window::new("Go to frame")
             .collapsible(false)
             .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.label("Frame number:");
 
@@ -414,7 +415,6 @@ impl PumpkinApp {
         egui::Window::new("Help")
             .collapsible(false)
             .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.heading("Keyboard Shortcuts");
                 egui::Grid::new("help_grid").num_columns(2).spacing([20.0, 8.0]).show(ui, |ui| {
@@ -439,6 +439,82 @@ impl PumpkinApp {
                     }
                 });
             });
+    }
+
+    fn show_actions_window(&mut self, ctx: &Context) {
+        if !self.show_actions {
+            return;
+        }
+
+        let mut open = true;
+        let mut close_clicked = false;
+        egui::Window::new("Actions")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.heading("Open file");
+                ui.horizontal(|ui| {
+                    if ui.button("Open HDF5…").on_hover_text("Open HDF5 master file (Ctrl+O)").clicked() {
+                        close_clicked = true;
+                        self.open_hdf5_dialog();
+                    }
+                    let save_enabled = self.frame.is_some();
+                    if ui.add_enabled(save_enabled, egui::Button::new("Save PNG"))
+                        .on_hover_text("Save current image with overlays as PNG")
+                        .clicked()
+                    {
+                        close_clicked = true;
+                        self.save_png();
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.heading("Connection");
+                ui.horizontal(|ui| {
+                    ui.label("DCU URL:");
+                    ui.text_edit_singleline(&mut self.dcu_url);
+                });
+                if self.connected {
+                    if ui.button("Disconnect").clicked() {
+                        self.disconnect();
+                    }
+                } else if ui.button("Connect").clicked() {
+                    self.connect();
+                }
+
+                ui.add_space(8.0);
+                ui.heading("Overlays");
+
+                ui.checkbox(&mut self.overlays.show_beam_center, "Beam center");
+                egui::Grid::new("beam_center_grid").num_columns(2).show(ui, |ui| {
+                    ui.label("  Color");
+                    ui.color_edit_button_srgba(&mut self.overlays.beam_center_color);
+                    ui.end_row();
+                    ui.label("  Width");
+                    ui.add(egui::Slider::new(&mut self.overlays.beam_center_stroke_width, 0.5..=5.0));
+                    ui.end_row();
+                });
+
+                ui.checkbox(&mut self.overlays.show_resolution_rings, "Resolution rings");
+                egui::Grid::new("rings_grid").num_columns(2).show(ui, |ui| {
+                    ui.label("  Color");
+                    ui.color_edit_button_srgba(&mut self.overlays.ring_color);
+                    ui.end_row();
+                    ui.label("  Width");
+                    ui.add(egui::Slider::new(&mut self.overlays.ring_stroke_width, 0.5..=5.0));
+                    ui.end_row();
+                    ui.label("  Font scale");
+                    ui.add(egui::Slider::new(&mut self.overlays.ring_font_scale, 0.5..=3.0));
+                    ui.end_row();
+                });
+
+                ui.add_space(8.0);
+                if ui.button("Close").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    close_clicked = true;
+                }
+            });
+        self.show_actions = open && !close_clicked;
     }
 
     /// Update displayed frame and auto-contrast without touching pending_fit.
@@ -586,17 +662,9 @@ impl PumpkinApp {
     }
 
     fn show_left_panel(&mut self, ui: &mut Ui) {
-        ui.heading("Open file");
         ui.horizontal(|ui| {
-            if ui.button("Open HDF5…").on_hover_text("Open HDF5 master file (Ctrl+O)").clicked() {
-                self.open_hdf5_dialog();
-            }
-            let save_enabled = self.frame.is_some();
-            if ui.add_enabled(save_enabled, egui::Button::new("Save PNG"))
-                .on_hover_text("Save current image with overlays as PNG")
-                .clicked()
-            {
-                self.save_png();
+            if ui.button("Actions…").clicked() {
+                self.show_actions = true;
             }
         });
         ui.separator();
@@ -871,66 +939,6 @@ impl PumpkinApp {
                 );
             }
         }
-        ui.separator();
-
-        ui.heading("Overlays");
-
-        ui.checkbox(&mut self.overlays.show_beam_center, "Beam center");
-        egui::Grid::new("beam_center_grid").num_columns(2).show(ui, |ui| {
-            ui.label("  Color");
-            ui.color_edit_button_srgba(&mut self.overlays.beam_center_color);
-            ui.end_row();
-            ui.label("  Width");
-            ui.add(egui::Slider::new(&mut self.overlays.beam_center_stroke_width, 0.5..=5.0));
-            ui.end_row();
-        });
-
-        ui.checkbox(&mut self.overlays.show_resolution_rings, "Resolution rings");
-        egui::Grid::new("rings_grid").num_columns(2).show(ui, |ui| {
-            ui.label("  Color");
-            ui.color_edit_button_srgba(&mut self.overlays.ring_color);
-            ui.end_row();
-            ui.label("  Width");
-            ui.add(egui::Slider::new(&mut self.overlays.ring_stroke_width, 0.5..=5.0));
-            ui.end_row();
-            ui.label("  Font scale");
-            ui.add(egui::Slider::new(&mut self.overlays.ring_font_scale, 0.5..=3.0));
-            ui.end_row();
-        });
-
-        ui.separator();
-
-        ui.heading("Viewport");
-        ui.add_enabled_ui(self.frame.is_some() && self.last_viewport_rect.is_positive(), |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("Fit").on_hover_text("Fit image to viewport (0)").clicked() {
-                    if let Some(ref frame) = self.frame {
-                        self.view.fit_to(frame.width as f32, frame.height as f32, self.last_viewport_rect);
-                    }
-                }
-                if ui.button("1:1").on_hover_text("Zoom to 1:1 (1)").clicked() {
-                    self.view.zoom_to_one(self.last_viewport_rect);
-                }
-            });
-        });
-        if self.frame.is_some() {
-            ui.label(format!("Zoom: {:.2}×", self.view.zoom));
-        }
-        ui.checkbox(&mut self.lock_zoom, "Lock zoom").on_hover_text("Prevent auto-fit when a new monitor series arrives");
-
-        ui.heading("Connection");
-        ui.horizontal(|ui| {
-            ui.label("DCU URL:");
-            ui.text_edit_singleline(&mut self.dcu_url);
-        });
-        if self.connected {
-            if ui.button("Disconnect").clicked() {
-                self.disconnect();
-            }
-        } else if ui.button("Connect").clicked() {
-            self.connect();
-        }
-
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -1095,6 +1103,8 @@ impl eframe::App for PumpkinApp {
         if self.show_help {
             self.show_help_window(ctx);
         }
+
+        self.show_actions_window(ctx);
 
         if ctx.input_mut(|i| i.consume_shortcut(&goto_shortcut)) {
             self.show_help = false;
