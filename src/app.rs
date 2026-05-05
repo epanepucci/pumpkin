@@ -97,6 +97,7 @@ pub struct PumpkinApp {
     show_goto_frame: bool,
     goto_frame_input: String,
 
+    auto_region: bool,
     lock_zoom: bool,
     show_help: bool,
     show_panel: bool,
@@ -190,6 +191,7 @@ impl PumpkinApp {
             histogram_cache: None,
             show_goto_frame: false,
             goto_frame_input: "0".to_string(),
+            auto_region: false,
             lock_zoom: true,
             show_help: false,
             show_panel: true,
@@ -785,6 +787,8 @@ impl PumpkinApp {
             let region = ui.add_enabled(self.frame.is_some(), egui::Button::new("Region"))
                 .on_hover_text("Auto contrast from visible region")
                 .clicked();
+            ui.checkbox(&mut self.auto_region, "Auto-region")
+                .on_hover_text("Re-run region contrast after every pan or zoom");
             (run, region)
         }).inner;
         if run_auto {
@@ -1003,7 +1007,14 @@ impl PumpkinApp {
         }
 
         // Handle pan + zoom input.
-        viewport::handle_input(&mut self.view, &response, Some(frame));
+        let view_changed = viewport::handle_input(&mut self.view, &response, Some(frame));
+        if view_changed && self.auto_region {
+            if let Some(ref frame) = self.frame.clone() {
+                let (vmin, vmax) = auto_contrast_region(frame, &self.view, available);
+                self.contrast.vmin = vmin;
+                self.contrast.vmax = vmax;
+            }
+        }
 
         // Resolve the GPU texture: use a prefetched VRAM handle when available,
         // otherwise tone-map on-demand via ImageTexture.
