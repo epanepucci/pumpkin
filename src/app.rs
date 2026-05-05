@@ -190,7 +190,7 @@ impl PumpkinApp {
             histogram_cache: None,
             show_goto_frame: false,
             goto_frame_input: "0".to_string(),
-            lock_zoom: false,
+            lock_zoom: true,
             show_help: false,
             show_panel: true,
             show_actions: false,
@@ -554,7 +554,7 @@ impl PumpkinApp {
             // Start at the most recent frame and fit to view (unless zoom is locked).
             self.monitor_frame_index = self.monitor_frames.len().saturating_sub(1);
             if !self.lock_zoom {
-                self.pending_fit = true;
+                self.pending_fit = true; // will zoom to 1:1 centered on next frame
             }
         } else {
             // Keep current index, clamped to valid range.
@@ -996,9 +996,9 @@ impl PumpkinApp {
             return;
         };
 
-        // Fit to view the first time a frame arrives.
+        // Center at 1:1 the first time a frame arrives.
         if self.pending_fit && self.hdf5_frame_index == 0 {
-            self.view.fit_to(frame.width as f32, frame.height as f32, available);
+            self.view.zoom_to_one_centered(frame.width as f32, frame.height as f32, available);
             self.pending_fit = false;
         }
 

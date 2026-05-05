@@ -71,6 +71,15 @@ impl ViewState {
         );
     }
 
+    /// Zoom to 1:1 and center the image in the viewport.
+    pub fn zoom_to_one_centered(&mut self, image_w: f32, image_h: f32, viewport: Rect) {
+        self.zoom = 1.0;
+        self.offset = Vec2::new(
+            -(viewport.width() - image_w) * 0.5,
+            -(viewport.height() - image_h) * 0.5,
+        );
+    }
+
     /// Zoom to 1:1, centered on the current viewport center.
     pub fn zoom_to_one(&mut self, viewport: Rect) {
         let focal = viewport.center();
