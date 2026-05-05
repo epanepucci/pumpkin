@@ -450,6 +450,26 @@ impl PumpkinApp {
         false
     }
 
+    fn save_png(&self) {
+        let Some(ref frame) = self.frame else { return };
+        let save_dir = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        match crate::png_export::export_png(
+            frame,
+            self.contrast.vmin,
+            self.contrast.vmax,
+            self.contrast.gamma_correction,
+            self.effective_saturation(),
+            self.contrast.colormap,
+            &self.overlays,
+            &save_dir,
+        ) {
+            Ok(path) => eprintln!("Saved PNG: {}", path.display()),
+            Err(e)   => eprintln!("PNG export failed: {e:#}"),
+        }
+    }
+
     fn fetch_monitor_frame_on_demand(&self, image_id: u64) {
         let Some(series_id) = self.monitor_series_id else {
             eprintln!("On-demand: no active series, ignoring request for image {image_id}");
@@ -481,6 +501,13 @@ impl PumpkinApp {
         ui.horizontal(|ui| {
             if ui.button("Open HDF5…").on_hover_text("Open HDF5 master file (Ctrl+O)").clicked() {
                 self.open_hdf5_dialog();
+            }
+            let save_enabled = self.frame.is_some();
+            if ui.add_enabled(save_enabled, egui::Button::new("Save PNG"))
+                .on_hover_text("Save current image with overlays as PNG")
+                .clicked()
+            {
+                self.save_png();
             }
         });
         ui.separator();

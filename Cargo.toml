@@ -21,3 +21,4 @@ tiff = "0.11.3"
 tokio = { version = "1.51.1", features = ["full"] }
 wgpu = "27.0.1"
 egui-file-dialog = "0.12"
+png = "0.18"

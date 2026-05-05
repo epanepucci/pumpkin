@@ -32,7 +32,9 @@
       "Bash(cargo info *)",
       "Bash(cargo remove *)",
       "Bash(rustup target *)",
-      "Bash(rustup toolchain *)"
+      "Bash(rustup toolchain *)",
+      "Bash(xargs ls *)",
+      "Bash(cargo doc *)"
     ]
   }
 }

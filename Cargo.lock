@@ -2932,6 +2932,7 @@ dependencies = [
  "glam",
  "hdf5-metno",
  "ndarray",
+ "png",
  "rayon",
  "reqwest",
  "serde",
