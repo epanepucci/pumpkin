@@ -78,8 +78,10 @@ pub struct PumpkinApp {
     hdf5_series: Option<Hdf5Series>,
     /// Path to the master file (kept for the prefetch thread to open its own handle).
     hdf5_master_path: Option<std::path::PathBuf>,
-    /// Current frame index within the HDF5 series.
+    /// Current frame index within the HDF5 series (always a multiple of hdf5_grouping).
     hdf5_frame_index: usize,
+    /// Number of consecutive frames to sum before displaying.
+    hdf5_grouping: usize,
     /// Background prefetcher: loads + tone-maps neighboring frames into VRAM.
     hdf5_prefetcher: Option<HDF5Prefetcher>,
     /// Contrast params last used to schedule prefetch requests; invalidate on change.
@@ -183,6 +185,7 @@ impl PumpkinApp {
             hdf5_series: None,
             hdf5_master_path: None,
             hdf5_frame_index: 0,
+            hdf5_grouping: 1,
             hdf5_prefetcher: None,
             prefetch_contrast: (f32::NAN, f32::NAN, f32::NAN, Colormap::Inferno),
             saturation_override_enabled: true,
@@ -320,6 +323,56 @@ impl PumpkinApp {
         self.schedule_hdf5_prefetch();
     }
 
+    /// Load and display the group starting at `start_index`, summing `hdf5_grouping` frames.
+    /// Falls back to the single-frame path (with prefetcher) when grouping == 1.
+    fn load_hdf5_grouped(&mut self, start_index: usize) {
+        if self.hdf5_grouping <= 1 {
+            self.load_hdf5_frame(start_index);
+            return;
+        }
+
+        let grouped = {
+            let Some(ref series) = self.hdf5_series else { return };
+            let end = (start_index + self.hdf5_grouping).min(series.total_frames);
+            let mut acc: Option<Vec<u32>> = None;
+            let mut width = 0u32;
+            let mut height = 0u32;
+            let mut metadata = series.series_metadata.clone();
+
+            for idx in start_index..end {
+                match series.load_frame(idx) {
+                    Ok(frame) => {
+                        width = frame.width;
+                        height = frame.height;
+                        if idx == start_index {
+                            metadata = frame.metadata.clone();
+                        }
+                        match acc {
+                            None => acc = Some(frame.pixels.iter().map(|&v| v as u32).collect()),
+                            Some(ref mut a) => {
+                                for (s, &v) in a.iter_mut().zip(frame.pixels.iter()) {
+                                    *s += v as u32;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("HDF5 grouped frame {idx}: {e:#}"),
+                }
+            }
+            acc.map(|a| (a, width, height, metadata))
+        };
+
+        if let Some((acc, width, height, metadata)) = grouped {
+            let effective_sat = self.effective_saturation();
+            let pixels: Vec<u16> = acc.iter().map(|&s| s.min(effective_sat as u32) as u16).collect();
+            let frame = Frame { pixels, width, height, saturation_value: effective_sat, metadata };
+            self.on_new_frame(Arc::new(frame));
+        }
+        // Don't prefetch individual frames in grouped mode — they would overwrite
+        // the grouped texture in the cache and cause the renderer to display the
+        // wrong (non-summed) colorization.
+    }
+
     fn effective_saturation(&self) -> u16 {
         if self.saturation_override_enabled {
             self.saturation_override_value
@@ -398,8 +451,10 @@ impl PumpkinApp {
     }
 
     fn do_goto_frame(&mut self, frame: usize) {
-        self.hdf5_frame_index = frame;
-        self.load_hdf5_frame(frame);
+        let grouping = self.hdf5_grouping.max(1);
+        let snapped = (frame / grouping) * grouping;
+        self.hdf5_frame_index = snapped;
+        self.load_hdf5_grouped(snapped);
     }
 
     pub fn open_hdf5_dialog(&mut self) {
@@ -713,30 +768,51 @@ impl PumpkinApp {
         // HDF5 Frame browser
         if let Some(ref series) = self.hdf5_series {
             let total = series.total_frames;
-            ui.label(format!("{total} frames"));
+            let grouping = self.hdf5_grouping.max(1);
+            let n_groups = (total / grouping).max(1);
+
+            ui.horizontal(|ui| {
+                ui.label(format!("{total} frames"));
+                ui.separator();
+                ui.label("Grouping:");
+                let old_grouping = self.hdf5_grouping;
+                ui.add(egui::DragValue::new(&mut self.hdf5_grouping).range(1..=total).speed(0.1));
+                if self.hdf5_grouping != old_grouping {
+                    // Snap frame index to the new group boundary.
+                    let g = self.hdf5_grouping.max(1);
+                    self.hdf5_frame_index = (self.hdf5_frame_index / g) * g;
+                    // Discard single-frame cache so grouped frames are never
+                    // overridden by stale individual-frame textures.
+                    if let Some(ref mut p) = self.hdf5_prefetcher {
+                        p.invalidate();
+                    }
+                }
+            });
 
             let old_index = self.hdf5_frame_index;
 
-            // Slider over the full range.
-            ui.add(egui::Slider::new(&mut self.hdf5_frame_index, 0..=total.saturating_sub(1)).text("frame"));
+            let mut group_idx = self.hdf5_frame_index / grouping;
+            if ui.add(egui::Slider::new(&mut group_idx, 0..=n_groups.saturating_sub(1)).text("group")).changed() {
+                self.hdf5_frame_index = group_idx * grouping;
+            }
 
             ui.horizontal(|ui| {
-                if ui.button("◀").clicked() && self.hdf5_frame_index > 0 {
-                    self.hdf5_frame_index -= 1;
+                if ui.button("◀").clicked() && self.hdf5_frame_index >= grouping {
+                    self.hdf5_frame_index -= grouping;
                 }
-                if ui.button("▶").clicked() && self.hdf5_frame_index + 1 < total {
-                    self.hdf5_frame_index += 1;
+                if ui.button("▶").clicked() && self.hdf5_frame_index + grouping < total {
+                    self.hdf5_frame_index += grouping;
                 }
                 if ui.button("|◀").clicked() {
                     self.hdf5_frame_index = 0;
                 }
                 if ui.button("▶|").clicked() {
-                    self.hdf5_frame_index = total.saturating_sub(1);
+                    self.hdf5_frame_index = (n_groups - 1) * grouping;
                 }
             });
 
-            if self.hdf5_frame_index != old_index {
-                self.load_hdf5_frame(self.hdf5_frame_index);
+            if self.hdf5_frame_index != old_index || self.hdf5_grouping != grouping {
+                self.load_hdf5_grouped(self.hdf5_frame_index);
             }
         }
 
@@ -1018,10 +1094,15 @@ impl PumpkinApp {
 
         // Resolve the GPU texture: use a prefetched VRAM handle when available,
         // otherwise tone-map on-demand via ImageTexture.
-        let prefetched_id = self.hdf5_prefetcher
-            .as_ref()
-            .and_then(|p| p.get(self.hdf5_frame_index))
-            .map(|c| c.texture.id())
+        // Skip the prefetcher in grouped mode — it only caches individual frames.
+        let prefetched_id = (self.hdf5_grouping <= 1)
+            .then(|| {
+                self.hdf5_prefetcher
+                    .as_ref()
+                    .and_then(|p| p.get(self.hdf5_frame_index))
+                    .map(|c| c.texture.id())
+            })
+            .flatten()
             .or_else(|| {
                 self.monitor_prefetcher
                     .get(self.monitor_frame_index)
@@ -1153,20 +1234,21 @@ impl eframe::App for PumpkinApp {
 
         if let Some(ref series) = self.hdf5_series {
             let total = series.total_frames;
+            let grouping = self.hdf5_grouping.max(1);
             let old_index = self.hdf5_frame_index;
 
             if mouse_over_viewport {
-                if ctx.input_mut(|i| i.consume_shortcut(&previous_image_shortcut)) && self.hdf5_frame_index > 0 {
-                    self.hdf5_frame_index -= 1;
+                if ctx.input_mut(|i| i.consume_shortcut(&previous_image_shortcut)) && self.hdf5_frame_index >= grouping {
+                    self.hdf5_frame_index -= grouping;
                 }
 
-                if ctx.input_mut(|i| i.consume_shortcut(&next_image_shortcut)) && self.hdf5_frame_index + 1 < total {
-                    self.hdf5_frame_index += 1;
+                if ctx.input_mut(|i| i.consume_shortcut(&next_image_shortcut)) && self.hdf5_frame_index + grouping < total {
+                    self.hdf5_frame_index += grouping;
                 }
             }
 
             if self.hdf5_frame_index != old_index {
-                self.load_hdf5_frame(self.hdf5_frame_index);
+                self.load_hdf5_grouped(self.hdf5_frame_index);
             }
         }
 
