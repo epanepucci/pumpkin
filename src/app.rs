@@ -6,7 +6,6 @@ use tokio::sync::watch;
 
 use crate::frame::{Frame, FrameMetadata};
 use crate::hdf5_loader::Hdf5Series;
-use crate::hdf5_prefetch::HDF5Prefetcher;
 use crate::image_render::{Colormap, ImageTexture};
 use crate::monitor::{MonitorBatch, MonitorConfig, start_monitor_task};
 use crate::monitor_prefetch::MonitorPrefetcher;
@@ -45,6 +44,10 @@ pub struct PumpkinApp {
     frame_rx: Option<watch::Receiver<Option<MonitorBatch>>>,
 
     image_texture: ImageTexture,
+    /// Incremented every time `self.frame` changes; used as the cache key for
+    /// `ImageTexture::update` instead of the raw Arc pointer (which the allocator
+    /// can reuse across frames of the same size, causing false cache hits).
+    frame_generation: u64,
     view: ViewState,
     contrast: ContrastState,
     overlays: OverlaySettings,
@@ -73,6 +76,8 @@ pub struct PumpkinApp {
     on_demand_rx: std::sync::mpsc::Receiver<Frame>,
     /// VRAM cache for tone-mapped monitor frames.
     monitor_prefetcher: MonitorPrefetcher,
+    /// Contrast params last used to submit monitor prefetch requests; invalidate on change.
+    monitor_contrast: (f32, f32, f32, Colormap),
 
     /// Open HDF5 series, if any.
     hdf5_series: Option<Hdf5Series>,
@@ -82,10 +87,6 @@ pub struct PumpkinApp {
     hdf5_frame_index: usize,
     /// Number of consecutive frames to sum before displaying.
     hdf5_grouping: usize,
-    /// Background prefetcher: loads + tone-maps neighboring frames into VRAM.
-    hdf5_prefetcher: Option<HDF5Prefetcher>,
-    /// Contrast params last used to schedule prefetch requests; invalidate on change.
-    prefetch_contrast: (f32, f32, f32, Colormap),
 
     saturation_override_enabled: bool,
     saturation_override_value: u16,
@@ -165,6 +166,7 @@ impl PumpkinApp {
             frame: None,
             frame_rx: None,
             image_texture: ImageTexture::default(),
+            frame_generation: 0,
             view: ViewState::default(),
             contrast,
             overlays,
@@ -182,12 +184,11 @@ impl PumpkinApp {
             on_demand_tx,
             on_demand_rx,
             monitor_prefetcher: MonitorPrefetcher::new(),
+            monitor_contrast: (f32::NAN, f32::NAN, f32::NAN, Colormap::Inferno),
             hdf5_series: None,
             hdf5_master_path: None,
             hdf5_frame_index: 0,
             hdf5_grouping: 1,
-            hdf5_prefetcher: None,
-            prefetch_contrast: (f32::NAN, f32::NAN, f32::NAN, Colormap::Inferno),
             saturation_override_enabled: true,
             saturation_override_value: 32767,
             file_saturation_value: None,
@@ -290,37 +291,21 @@ impl PumpkinApp {
     pub fn load_hdf5_master(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
         let series = Hdf5Series::open(path)?;
         let first = series.load_frame(0)?;
-        let prefetcher = HDF5Prefetcher::new(path.to_path_buf());
         self.hdf5_master_path = Some(path.to_path_buf());
         self.hdf5_series = Some(series);
-        self.hdf5_prefetcher = Some(prefetcher);
         self.hdf5_frame_index = 0;
         self.on_new_frame(Arc::new(first));
-        self.schedule_hdf5_prefetch();
         Ok(())
     }
 
-    /// Navigate to an HDF5 frame, using the VRAM cache when available.
+    /// Navigate to an HDF5 frame.
     fn load_hdf5_frame(&mut self, index: usize) {
-        // Fast path: texture + frame already prefetched into VRAM.
-        if let Some(ref prefetcher) = self.hdf5_prefetcher {
-            if let Some(cached) = prefetcher.get(index) {
-                // Clone the Frame out so we can release the borrow on self.
-                let frame = Arc::new(cached.frame.clone());
-                self.display_frame(frame);
-                self.schedule_hdf5_prefetch();
-                return;
-            }
-        }
-
-        // Slow path: synchronous disk read (prefetcher will cover this on the next navigation).
         if let Some(ref series) = self.hdf5_series {
             match series.load_frame(index) {
                 Ok(frame) => self.on_new_frame(Arc::new(frame)),
                 Err(e) => eprintln!("HDF5 frame {index}: {e:#}"),
             }
         }
-        self.schedule_hdf5_prefetch();
     }
 
     /// Load and display the group starting at `start_index`, summing `hdf5_grouping` frames.
@@ -381,33 +366,6 @@ impl PumpkinApp {
         }
     }
 
-    /// Request the current frame and its neighbors from the background prefetcher.
-    fn schedule_hdf5_prefetch(&mut self) {
-        let Some(ref series) = self.hdf5_series else { return };
-        let Some(ref mut prefetcher) = self.hdf5_prefetcher else { return };
-        let total = series.total_frames;
-        let cur = self.hdf5_frame_index;
-        let vmin = self.contrast.vmin;
-        let vmax = self.contrast.vmax;
-        let gamma_correction = self.contrast.gamma_correction;
-        let saturation = if self.saturation_override_enabled {
-            self.saturation_override_value
-        } else {
-            self.frame.as_ref().map(|f| f.saturation_value).unwrap_or(u16::MAX)
-        };
-        let colormap = self.contrast.colormap;
-
-        for offset in 0..=3usize {
-            if cur + offset < total {
-                prefetcher.request(cur + offset, vmin, vmax, gamma_correction, saturation, colormap);
-            }
-            if offset > 0 && cur >= offset {
-                prefetcher.request(cur - offset, vmin, vmax, gamma_correction, saturation, colormap);
-            }
-        }
-        prefetcher.evict_distant(cur);
-        self.prefetch_contrast = (vmin, vmax, gamma_correction, colormap);
-    }
 
     pub fn goto_frame(&mut self, ctx: &egui::Context) {
         if !self.show_goto_frame {
@@ -592,6 +550,7 @@ impl PumpkinApp {
             self.contrast.vmax = vmax;
         }
         self.frame = Some(frame);
+        self.frame_generation += 1;
     }
 
     fn on_new_frame(&mut self, frame: Arc<Frame>) {
@@ -781,11 +740,6 @@ impl PumpkinApp {
                     // Snap frame index to the new group boundary.
                     let g = self.hdf5_grouping.max(1);
                     self.hdf5_frame_index = (self.hdf5_frame_index / g) * g;
-                    // Discard single-frame cache so grouped frames are never
-                    // overridden by stale individual-frame textures.
-                    if let Some(ref mut p) = self.hdf5_prefetcher {
-                        p.invalidate();
-                    }
                 }
             });
 
@@ -909,10 +863,6 @@ impl PumpkinApp {
             (self.saturation_override_enabled, self.saturation_override_value) != before
         }).inner;
         if sat_changed {
-            if let Some(ref mut prefetcher) = self.hdf5_prefetcher {
-                prefetcher.invalidate();
-            }
-            self.schedule_hdf5_prefetch();
             self.image_texture = crate::image_render::ImageTexture::default();
             let sat = self.effective_saturation();
             if let Some(ref mut frame) = self.frame {
@@ -1092,31 +1042,17 @@ impl PumpkinApp {
             }
         }
 
-        // Resolve the GPU texture: use a prefetched VRAM handle when available,
-        // otherwise tone-map on-demand via ImageTexture.
-        // Skip the prefetcher in grouped mode — it only caches individual frames.
-        let prefetched_id = (self.hdf5_grouping <= 1)
-            .then(|| {
-                self.hdf5_prefetcher
-                    .as_ref()
-                    .and_then(|p| p.get(self.hdf5_frame_index))
-                    .map(|c| c.texture.id())
-            })
-            .flatten()
-            .or_else(|| {
-                self.monitor_prefetcher
-                    .get(self.monitor_frame_index)
-                    .map(|h| h.id())
-            });
+        let prefetched_id = self.monitor_prefetcher
+            .get(self.monitor_frame_index)
+            .map(|h| h.id());
 
         let texture_id = match prefetched_id {
             Some(id) => id,
             None => {
-                let frame_ptr = Arc::as_ptr(frame) as usize;
                 let Some(t) = self.image_texture.update(
                     ctx,
                     frame,
-                    frame_ptr,
+                    self.frame_generation,
                     self.contrast.vmin,
                     self.contrast.vmax,
                     self.contrast.gamma_correction,
@@ -1252,40 +1188,26 @@ impl eframe::App for PumpkinApp {
             }
         }
 
-        // Poll prefetchers and upload any completed textures.
-        if let Some(ref mut prefetcher) = self.hdf5_prefetcher {
-            if prefetcher.poll(ctx) {
-                ctx.request_repaint();
-            }
-        }
+        // Poll monitor prefetcher and upload any completed textures.
         if self.monitor_prefetcher.poll(ctx) {
             ctx.request_repaint();
         }
 
-        // Invalidate prefetcher caches when contrast settings change.
+        // Invalidate monitor prefetcher cache when contrast settings change.
         let cur_contrast = (self.contrast.vmin, self.contrast.vmax, self.contrast.gamma_correction, self.contrast.colormap);
-        if cur_contrast != self.prefetch_contrast {
-            if self.hdf5_series.is_some() {
-                if let Some(ref mut prefetcher) = self.hdf5_prefetcher {
-                    prefetcher.invalidate();
-                }
-                self.schedule_hdf5_prefetch();
-            }
-            if !self.monitor_frames.is_empty() {
-                self.monitor_prefetcher.invalidate();
-                self.monitor_prefetcher.submit_batch(
-                    &self.monitor_frames,
-                    false,
-                    cur_contrast.0,
-                    cur_contrast.1,
-                    cur_contrast.2,
-                    self.effective_saturation(),
-                    cur_contrast.3,
-                );
-            }
-            // Must update after the block; NaN != NaN would re-trigger every frame otherwise.
-            self.prefetch_contrast = cur_contrast;
+        if !self.monitor_frames.is_empty() && cur_contrast != self.monitor_contrast {
+            self.monitor_prefetcher.invalidate();
+            self.monitor_prefetcher.submit_batch(
+                &self.monitor_frames,
+                false,
+                cur_contrast.0,
+                cur_contrast.1,
+                cur_contrast.2,
+                self.effective_saturation(),
+                cur_contrast.3,
+            );
         }
+        self.monitor_contrast = cur_contrast;
 
         if self.poll_new_frame() {
             ctx.request_repaint();

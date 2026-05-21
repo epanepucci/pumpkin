@@ -110,7 +110,7 @@ pub struct ImageTexture {
     last_vmax: f32,
     last_gamma_correction: f32,
     last_saturation: u16,
-    last_frame_ptr: usize,
+    last_frame_generation: u64,
     last_colormap: Colormap,
 }
 
@@ -122,7 +122,7 @@ impl Default for ImageTexture {
             last_vmax: f32::NAN,
             last_gamma_correction: f32::NAN,
             last_saturation: u16::MAX,
-            last_frame_ptr: 0,
+            last_frame_generation: u64::MAX,
             last_colormap: Colormap::Standard,
         }
     }
@@ -136,14 +136,14 @@ impl ImageTexture {
         &mut self,
         ctx: &Context,
         frame: &Frame,
-        frame_ptr: usize,
+        frame_generation: u64,
         vmin: f32,
         vmax: f32,
         gamma_correction: f32,
         saturation: u16,
         colormap: Colormap,
     ) -> Option<&TextureHandle> {
-        let needs_update = frame_ptr != self.last_frame_ptr
+        let needs_update = frame_generation != self.last_frame_generation
             || vmin != self.last_vmin
             || vmax != self.last_vmax
             || gamma_correction != self.last_gamma_correction
@@ -175,7 +175,7 @@ impl ImageTexture {
             self.last_vmax = vmax;
             self.last_gamma_correction = gamma_correction;
             self.last_saturation = saturation;
-            self.last_frame_ptr = frame_ptr;
+            self.last_frame_generation = frame_generation;
             self.last_colormap = colormap;
         }
 
