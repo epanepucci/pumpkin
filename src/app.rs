@@ -740,9 +740,9 @@ impl PumpkinApp {
         }
 
         ui.separator();
-        ui.heading("Frame browser");
         // HDF5 Frame browser
         if let Some(ref series) = self.hdf5_series {
+            ui.heading("HDF5 frame browser");
             let total = series.total_frames;
             let grouping = self.hdf5_grouping.max(1);
             let n_groups = (total / grouping).max(1);
@@ -788,8 +788,9 @@ impl PumpkinApp {
         }
 
         // Monitor frame browser.
-        if !self.monitor_image_ids.is_empty() {
+        else if !self.monitor_image_ids.is_empty() {
             let series_id = self.monitor_series_id.unwrap_or(0);
+            ui.heading("Monitor browser");
             ui.label(format!("Series {series_id} — {} images", self.monitor_image_ids.len()));
 
             let prev_selected = self.monitor_selected_id;
@@ -801,10 +802,10 @@ impl PumpkinApp {
             ui.horizontal(|ui| {
                 let can_prev = cur_pos.map_or(false, |p| p > 0);
                 let can_next = cur_pos.map_or(false, |p| p + 1 < self.monitor_image_ids.len());
-                if ui.add_enabled(can_prev, egui::Button::new("◀")).clicked() {
+                if ui.add_enabled(can_prev, egui::Button::new(egui::RichText::new("◀").size(36.0)).min_size(egui::vec2(80.0, 60.0)).corner_radius(10)).clicked() {
                     self.monitor_selected_id = Some(self.monitor_image_ids[cur_pos.unwrap() - 1]);
                 }
-                if ui.add_enabled(can_next, egui::Button::new("▶")).clicked() {
+                if ui.add_enabled(can_next, egui::Button::new(egui::RichText::new("▶").size(36.0)).min_size(egui::vec2(80.0, 60.0)).corner_radius(10)).clicked() {
                     self.monitor_selected_id = Some(self.monitor_image_ids[cur_pos.unwrap() + 1]);
                 }
                 egui::ComboBox::from_label("Frame")
