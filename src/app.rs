@@ -78,6 +78,10 @@ pub struct PumpkinApp {
     monitor_prefetcher: MonitorPrefetcher,
     /// Contrast params last used to submit monitor prefetch requests; invalidate on change.
     monitor_contrast: (f32, f32, f32, Colormap),
+    /// True while the user is viewing a specific on-demand frame from the browser;
+    /// suppresses prefetcher use and batch re-submission so the cached monitor
+    /// texture never overwrites what the user explicitly selected.
+    on_demand_active: bool,
 
     /// Open HDF5 series, if any.
     hdf5_series: Option<Hdf5Series>,
@@ -185,6 +189,7 @@ impl PumpkinApp {
             on_demand_rx,
             monitor_prefetcher: MonitorPrefetcher::new(),
             monitor_contrast: (f32::NAN, f32::NAN, f32::NAN, Colormap::Inferno),
+            on_demand_active: false,
             hdf5_series: None,
             hdf5_master_path: None,
             hdf5_frame_index: 0,
@@ -563,18 +568,29 @@ impl PumpkinApp {
         self.monitor_series_id = Some(batch.series_id);
         self.monitor_image_ids = batch.image_ids;
         self.monitor_series_meta = batch.metadata;
-        self.monitor_selected_id = self.monitor_image_ids.last().copied();
         self.monitor_frames = batch.frames;
 
         if new_series {
-            // Start at the most recent frame and fit to view (unless zoom is locked).
+            // New series: always go live, discard any on-demand selection.
+            self.on_demand_active = false;
+            self.monitor_selected_id = self.monitor_image_ids.last().copied();
             self.monitor_frame_index = self.monitor_frames.len().saturating_sub(1);
             if !self.lock_zoom {
-                self.pending_fit = true; // will zoom to 1:1 centered on next frame
+                self.pending_fit = true;
             }
         } else {
             // Keep current index, clamped to valid range.
             self.monitor_frame_index = self.monitor_frame_index.min(self.monitor_frames.len().saturating_sub(1));
+            // Don't reset the user's pulldown selection while they're viewing a specific frame.
+            if !self.on_demand_active {
+                self.monitor_selected_id = self.monitor_image_ids.last().copied();
+            }
+        }
+
+        if self.on_demand_active {
+            // User is viewing a specific on-demand frame — don't touch the display or
+            // submit prefetch tasks that would later overwrite it via the texture cache.
+            return;
         }
 
         // Invalidate stale textures before submitting — frames at the same index position
@@ -613,6 +629,7 @@ impl PumpkinApp {
         self.monitor_frames.clear();
         self.monitor_series_id = None;
         self.monitor_frame_index = 0;
+        self.on_demand_active = false;
         self.monitor_prefetcher.invalidate();
     }
 
@@ -1042,9 +1059,13 @@ impl PumpkinApp {
             }
         }
 
-        let prefetched_id = self.monitor_prefetcher
-            .get(self.monitor_frame_index)
-            .map(|h| h.id());
+        let prefetched_id = if !self.on_demand_active {
+            self.monitor_prefetcher
+                .get(self.monitor_frame_index)
+                .map(|h| h.id())
+        } else {
+            None
+        };
 
         let texture_id = match prefetched_id {
             Some(id) => id,
@@ -1195,7 +1216,7 @@ impl eframe::App for PumpkinApp {
 
         // Invalidate monitor prefetcher cache when contrast settings change.
         let cur_contrast = (self.contrast.vmin, self.contrast.vmax, self.contrast.gamma_correction, self.contrast.colormap);
-        if !self.monitor_frames.is_empty() && cur_contrast != self.monitor_contrast {
+        if !self.monitor_frames.is_empty() && !self.on_demand_active && cur_contrast != self.monitor_contrast {
             self.monitor_prefetcher.invalidate();
             self.monitor_prefetcher.submit_batch(
                 &self.monitor_frames,
@@ -1217,6 +1238,7 @@ impl eframe::App for PumpkinApp {
         if let Ok(frame) = self.on_demand_rx.try_recv() {
             eprintln!("On-demand: received frame, displaying image #{:?}", frame.metadata.image_number);
             self.monitor_prefetcher.invalidate();
+            self.on_demand_active = true;
             self.display_frame(Arc::new(frame));
             ctx.request_repaint();
         }
