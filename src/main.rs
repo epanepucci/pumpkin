@@ -118,6 +118,8 @@ fn main() -> anyhow::Result<()> {
         .or(cfg.poll_period_ms)
         .unwrap_or(500);
 
+    let monitor_pause_ms = cfg.monitor_pause_ms.unwrap_or(2000);
+
     // auto_connect: CLI flag wins; then config file; then fall back to
     // "only if --dcu-url was given on the CLI".
     let auto_connect = cfg.auto_connect.unwrap_or(dcu_url_from_cli);
@@ -190,7 +192,7 @@ fn main() -> anyhow::Result<()> {
             if let Some(scale) = ui_scale {
                 cc.egui_ctx.set_pixels_per_point(scale);
             }
-            Ok(Box::new(PumpkinApp::new(cc, dcu_url, poll_period_ms, auto_connect, contrast, overlays, splash_folder)))
+            Ok(Box::new(PumpkinApp::new(cc, dcu_url, poll_period_ms, monitor_pause_ms, auto_connect, contrast, overlays, splash_folder)))
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;

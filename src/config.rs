@@ -5,8 +5,9 @@
 ///
 /// Example:
 /// ```toml
-/// dcu_url       = "http://192.168.1.100"
-/// poll_period_ms = 200
+/// dcu_url           = "http://192.168.1.100"
+/// poll_period_ms    = 200
+/// monitor_pause_ms  = 2000   # pause live updates for this many ms after zoom/pan
 ///
 /// [contrast]
 /// colormap = "Inferno"   # Standard | Grayscale | Inferno | Rocket | Heat
@@ -29,6 +30,10 @@ use serde::Deserialize;
 pub struct Config {
     pub dcu_url: Option<String>,
     pub poll_period_ms: Option<u64>,
+    /// How long to pause live frame updates after a user zoom/pan interaction (ms).
+    /// Default is 2000 (2 seconds). Set to 0 to disable the pause.
+    #[serde(alias = "monitor-pause-ms")]
+    pub monitor_pause_ms: Option<u64>,
     /// Connect to the detector automatically on startup.
     #[serde(alias = "auto-connect")]
     pub auto_connect: Option<bool>,

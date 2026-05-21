@@ -59,7 +59,14 @@ pub struct PumpkinApp {
 
     dcu_url: String,
     poll_period_ms: u64,
+    /// Pause live frame updates for this duration after zoom/pan. 0 = disabled.
+    monitor_pause_ms: u64,
     connected: bool,
+    /// Last time the user interacted with the viewport (zoom or pan).
+    last_interaction_time: Option<std::time::Instant>,
+    /// Whether the monitor was paused on the previous update; used to detect
+    /// the pause-expiry transition and resume display immediately.
+    was_paused: bool,
 
     /// Latest frame from the monitor (single entry, replaced on every poll).
     monitor_frames: Vec<Arc<Frame>>,
@@ -160,6 +167,7 @@ impl PumpkinApp {
         _cc: &eframe::CreationContext,
         dcu_url: String,
         poll_period_ms: u64,
+        monitor_pause_ms: u64,
         auto_connect: bool,
         contrast: ContrastState,
         overlays: OverlaySettings,
@@ -178,7 +186,9 @@ impl PumpkinApp {
             last_viewport_rect: egui::Rect::NOTHING,
             dcu_url,
             poll_period_ms,
+            monitor_pause_ms,
             connected: false,
+            last_interaction_time: None,
             monitor_frames: Vec::new(),
             monitor_frame_index: 0,
             monitor_series_id: None,
@@ -190,6 +200,7 @@ impl PumpkinApp {
             monitor_prefetcher: MonitorPrefetcher::new(),
             monitor_contrast: (f32::NAN, f32::NAN, f32::NAN, Colormap::Inferno),
             on_demand_active: false,
+            was_paused: false,
             hdf5_series: None,
             hdf5_master_path: None,
             hdf5_frame_index: 0,
@@ -371,6 +382,16 @@ impl PumpkinApp {
         }
     }
 
+    /// True if the monitor live display should be paused because the user
+    /// interacted with the viewport recently (within `monitor_pause_ms`).
+    fn interaction_paused(&self) -> bool {
+        if self.monitor_pause_ms == 0 {
+            return false;
+        }
+        self.last_interaction_time
+            .map(|t| t.elapsed().as_millis() < self.monitor_pause_ms as u128)
+            .unwrap_or(false)
+    }
 
     pub fn goto_frame(&mut self, ctx: &egui::Context) {
         if !self.show_goto_frame {
@@ -593,9 +614,15 @@ impl PumpkinApp {
             return;
         }
 
-        // Invalidate stale textures before submitting — frames at the same index position
-        // change on every poll in live mode, so cached textures are never reusable across batches.
+        // Invalidate stale textures — frames at the same index change on every poll,
+        // so cached textures are never reusable across batches.
         self.monitor_prefetcher.invalidate();
+
+        if self.interaction_paused() {
+            // User is actively panning/zooming — keep showing the current frame until
+            // the interaction has been idle for monitor_pause_ms.
+            return;
+        }
 
         // Kick off background tone-mapping for all frames in the batch.
         self.monitor_prefetcher.submit_batch(
@@ -790,7 +817,14 @@ impl PumpkinApp {
         // Monitor frame browser.
         else if !self.monitor_image_ids.is_empty() {
             let series_id = self.monitor_series_id.unwrap_or(0);
-            ui.heading("Monitor browser");
+            ui.horizontal(|ui| {
+                ui.heading("Monitor browser");
+                if self.interaction_paused() {
+                    ui.label(egui::RichText::new("⏸ paused").color(egui::Color32::YELLOW).small());
+                } else if self.on_demand_active {
+                    ui.label(egui::RichText::new("browsing").color(egui::Color32::from_rgb(100, 180, 255)).small());
+                }
+            });
             ui.label(format!("Series {series_id} — {} images", self.monitor_image_ids.len()));
 
             let prev_selected = self.monitor_selected_id;
@@ -808,7 +842,10 @@ impl PumpkinApp {
                 if ui.add_enabled(can_next, egui::Button::new(egui::RichText::new("▶").size(36.0)).min_size(egui::vec2(80.0, 60.0)).corner_radius(10)).clicked() {
                     self.monitor_selected_id = Some(self.monitor_image_ids[cur_pos.unwrap() + 1]);
                 }
-                egui::ComboBox::from_label("Frame")
+            });
+            ui.horizontal(|ui| {
+                ui.label("Go to frame: ");
+                egui::ComboBox::from_label("")
                     .selected_text(
                         self.monitor_selected_id.map_or("—".to_string(), |id| id.to_string()),
                     )
@@ -1052,11 +1089,16 @@ impl PumpkinApp {
 
         // Handle pan + zoom input.
         let view_changed = viewport::handle_input(&mut self.view, &response, Some(frame));
-        if view_changed && self.auto_region {
-            if let Some(ref frame) = self.frame.clone() {
-                let (vmin, vmax) = auto_contrast_region(frame, &self.view, available);
-                self.contrast.vmin = vmin;
-                self.contrast.vmax = vmax;
+        if view_changed {
+            if self.connected {
+                self.last_interaction_time = Some(std::time::Instant::now());
+            }
+            if self.auto_region {
+                if let Some(ref frame) = self.frame.clone() {
+                    let (vmin, vmax) = auto_contrast_region(frame, &self.view, available);
+                    self.contrast.vmin = vmin;
+                    self.contrast.vmax = vmax;
+                }
             }
         }
 
@@ -1215,6 +1257,11 @@ impl eframe::App for PumpkinApp {
             ctx.request_repaint();
         }
 
+        // Detect pause-expiry transition before anything else touches display state.
+        let currently_paused = self.interaction_paused();
+        let just_resumed = self.was_paused && !currently_paused;
+        self.was_paused = currently_paused;
+
         // Invalidate monitor prefetcher cache when contrast settings change.
         let cur_contrast = (self.contrast.vmin, self.contrast.vmax, self.contrast.gamma_correction, self.contrast.colormap);
         if !self.monitor_frames.is_empty() && !self.on_demand_active && cur_contrast != self.monitor_contrast {
@@ -1231,8 +1278,29 @@ impl eframe::App for PumpkinApp {
         }
         self.monitor_contrast = cur_contrast;
 
-        if self.poll_new_frame() {
+        let poll_got_frame = self.poll_new_frame();
+        if poll_got_frame {
             ctx.request_repaint();
+        }
+
+        // Pause just expired and the monitor hasn't delivered a new batch yet —
+        // immediately display the last cached frame rather than waiting up to
+        // poll_period_ms for the next poll.
+        if just_resumed && !poll_got_frame && !self.on_demand_active && !self.monitor_frames.is_empty() {
+            self.monitor_prefetcher.invalidate();
+            self.monitor_prefetcher.submit_batch(
+                &self.monitor_frames,
+                false,
+                self.contrast.vmin,
+                self.contrast.vmax,
+                self.contrast.gamma_correction,
+                self.effective_saturation(),
+                self.contrast.colormap,
+            );
+            if let Some(frame) = self.monitor_frames.get(self.monitor_frame_index) {
+                self.display_frame(frame.clone());
+                ctx.request_repaint();
+            }
         }
 
         // Receive on-demand frames requested from the frame browser pulldown.
@@ -1247,6 +1315,18 @@ impl eframe::App for PumpkinApp {
         // Keep polling while connected.
         if self.connected {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+
+        // While paused, schedule a repaint at the moment the pause expires so
+        // the "⏸ paused" label disappears and live updates resume promptly.
+        if let Some(t) = self.last_interaction_time {
+            if self.monitor_pause_ms > 0 {
+                let elapsed = t.elapsed().as_millis() as u64;
+                if elapsed < self.monitor_pause_ms {
+                    let remaining = self.monitor_pause_ms - elapsed;
+                    ctx.request_repaint_after(std::time::Duration::from_millis(remaining));
+                }
+            }
         }
 
         self.file_dialog.update(ctx);
