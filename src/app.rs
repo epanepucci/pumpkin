@@ -123,6 +123,7 @@ pub struct PumpkinApp {
 
     auto_region: bool,
     lock_zoom: bool,
+    zoom_speed: f32,
     show_help: bool,
     show_panel: bool,
     show_actions: bool,
@@ -229,6 +230,7 @@ impl PumpkinApp {
             goto_frame_input: "0".to_string(),
             auto_region: false,
             lock_zoom: true,
+            zoom_speed: 0.02,
             show_help: false,
             show_panel: true,
             show_actions: false,
@@ -575,6 +577,18 @@ impl PumpkinApp {
                 });
 
                 ui.add_space(8.0);
+                ui.heading("Viewport");
+                egui::Grid::new("viewport_grid").num_columns(2).show(ui, |ui| {
+                    ui.label("Zoom speed");
+                    ui.add(
+                        egui::Slider::new(&mut self.zoom_speed, 0.005..=0.1)
+                            .step_by(0.005)
+                            .fixed_decimals(3),
+                    );
+                    ui.end_row();
+                });
+
+                ui.add_space(8.0);
                 if ui.button("Close").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     close_clicked = true;
                 }
@@ -748,13 +762,6 @@ impl PumpkinApp {
     }
 
     fn show_left_panel(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            if ui.button("Actions…").clicked() {
-                self.show_actions = true;
-            }
-        });
-        ui.separator();
-
         ui.heading("Metadata");
         if let Some(ref frame) = self.frame {
             let meta = &frame.metadata;
@@ -1057,8 +1064,11 @@ impl PumpkinApp {
             ui.horizontal(|ui| {
                 ui.label(format!("Uptime {}", Self::format_uptime(self.start_time.elapsed())));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.link("Show Shortcuts (?)").clicked() {
+                    if ui.link("Help (?)").clicked() {
                         self.show_help = true;
+                    }
+                    if ui.link("Actions…").clicked() {
+                        self.show_actions = true;
                     }
                 });
             });
@@ -1116,7 +1126,7 @@ impl PumpkinApp {
         }
 
         // Handle pan + zoom input.
-        let view_changed = viewport::handle_input(&mut self.view, &response, Some(frame));
+        let view_changed = viewport::handle_input(&mut self.view, &response, Some(frame), self.zoom_speed);
         if view_changed {
             if self.connected {
                 self.last_interaction_time = Some(std::time::Instant::now());

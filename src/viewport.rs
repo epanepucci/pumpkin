@@ -92,7 +92,8 @@ impl ViewState {
 }
 
 /// Handle pan and zoom input within the viewport rect. Returns true if view changed.
-pub fn handle_input(view: &mut ViewState, response: &Response, frame: Option<&Arc<Frame>>) -> bool {
+/// `zoom_speed` scales scroll input before exponentiation (default 0.02).
+pub fn handle_input(view: &mut ViewState, response: &Response, frame: Option<&Arc<Frame>>, zoom_speed: f32) -> bool {
     let mut changed = false;
 
     // Pan with left-button drag.
@@ -107,7 +108,7 @@ pub fn handle_input(view: &mut ViewState, response: &Response, frame: Option<&Ar
     let scroll = response.ctx.input(|i| i.smooth_scroll_delta.y);
     if scroll != 0.0 {
         let focal = response.hover_pos().unwrap_or(response.rect.center());
-        let factor = (scroll * 0.02).exp(); // ~0.2% per scroll unit
+        let factor = (scroll * zoom_speed).exp();
         view.zoom_around(focal, response.rect.min, factor);
         changed = true;
     }
