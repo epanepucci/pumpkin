@@ -5,9 +5,11 @@
 ///
 /// Example:
 /// ```toml
-/// dcu_url           = "http://192.168.1.100"
-/// poll_period_ms    = 200
-/// monitor_pause_ms  = 2000   # pause live updates for this many ms after zoom/pan
+/// dcu_url                  = "http://192.168.1.100"
+/// poll_period_ms           = 200
+/// unfocused_poll_period_ms = 2000   # slower poll rate when window is not focused
+/// monitor_pause_ms         = 2000   # pause live updates for this many ms after zoom/pan
+/// pause_if_idle_after      = 600    # pause monitoring after N seconds idle (0 = never)
 ///
 /// [contrast]
 /// colormap = "Inferno"   # Standard | Grayscale | Inferno | Rocket | Heat
@@ -30,10 +32,19 @@ use serde::Deserialize;
 pub struct Config {
     pub dcu_url: Option<String>,
     pub poll_period_ms: Option<u64>,
+    /// Poll period when the window is visible but not focused (ms). Default 2000.
+    /// The monitor continues downloading frames at this slower rate so it stays
+    /// up to date without hammering the detector when the user is doing something else.
+    #[serde(alias = "unfocused-poll-period-ms")]
+    pub unfocused_poll_period_ms: Option<u64>,
     /// How long to pause live frame updates after a user zoom/pan interaction (ms).
     /// Default is 2000 (2 seconds). Set to 0 to disable the pause.
     #[serde(alias = "monitor-pause-ms")]
     pub monitor_pause_ms: Option<u64>,
+    /// Pause monitoring completely after this many seconds of inactivity (seconds).
+    /// Default is 600 (10 minutes). Set to 0 to never pause on idle.
+    #[serde(alias = "pause-if-idle-after")]
+    pub pause_if_idle_after: Option<u64>,
     /// Connect to the detector automatically on startup.
     #[serde(alias = "auto-connect")]
     pub auto_connect: Option<bool>,

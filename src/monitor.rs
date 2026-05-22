@@ -13,8 +13,6 @@ pub struct MonitorConfig {
     pub dcu_url: String,
     /// SIMPLON API version string, e.g. "1.8.0".
     pub api_version: String,
-    /// How often to poll the buffer list for new images (milliseconds).
-    pub poll_period_ms: u64,
 }
 
 impl MonitorConfig {
@@ -66,8 +64,14 @@ pub fn enable_monitor(client: &reqwest::blocking::Client, cfg: &MonitorConfig) -
 }
 
 /// Spawn a background task that polls the monitor buffer list and sends decoded
-/// frames over a `watch` channel. Returns the receiver.
-pub fn start_monitor_task(cfg: MonitorConfig) -> watch::Receiver<Option<MonitorBatch>> {
+/// frames over a `watch` channel.
+///
+/// `period_rx` controls the poll interval at runtime (milliseconds). Send 0 to
+/// pause polling entirely. A period change wakes any in-progress sleep immediately.
+pub fn start_monitor_task(
+    cfg: MonitorConfig,
+    mut period_rx: watch::Receiver<u64>,
+) -> watch::Receiver<Option<MonitorBatch>> {
     let (tx, rx) = watch::channel(None);
 
     tokio::spawn(async move {
@@ -112,6 +116,16 @@ pub fn start_monitor_task(cfg: MonitorConfig) -> watch::Receiver<Option<MonitorB
                 break;
             }
 
+            let period_ms = *period_rx.borrow();
+            if period_ms == 0 {
+                // Paused — sleep briefly, but wake immediately if the period changes.
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+                    _ = period_rx.changed() => {}
+                }
+                continue;
+            }
+
             let list_url = cfg.images_list_url();
             let buffer_list = match fetch_buffer_list(&client, &list_url).await {
                 Ok(list) => list,
@@ -123,7 +137,7 @@ pub fn start_monitor_task(cfg: MonitorConfig) -> watch::Receiver<Option<MonitorB
             };
 
             let Some((series_id, image_ids)) = buffer_list.last().cloned() else {
-                tokio::time::sleep(Duration::from_millis(cfg.poll_period_ms)).await;
+                poll_sleep(period_ms, &mut period_rx).await;
                 continue;
             };
 
@@ -132,7 +146,7 @@ pub fn start_monitor_task(cfg: MonitorConfig) -> watch::Receiver<Option<MonitorB
             let new_series = Some(series_id) != known_series_id;
             let changed = new_series || image_count != known_image_count || last_image_id != known_last_image_id;
             if !changed {
-                tokio::time::sleep(Duration::from_millis(cfg.poll_period_ms)).await;
+                poll_sleep(period_ms, &mut period_rx).await;
                 continue;
             }
 
@@ -173,11 +187,21 @@ pub fn start_monitor_task(cfg: MonitorConfig) -> watch::Receiver<Option<MonitorB
                 }));
             }
 
-            tokio::time::sleep(Duration::from_millis(cfg.poll_period_ms)).await;
+            poll_sleep(period_ms, &mut period_rx).await;
         }
     });
 
     rx
+}
+
+/// Sleep for `period_ms`, but cut it short if `period_rx` delivers a new value.
+/// This ensures a period change (e.g. focus restored) takes effect immediately
+/// rather than at the end of a potentially long unfocused-mode sleep.
+async fn poll_sleep(period_ms: u64, period_rx: &mut watch::Receiver<u64>) {
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_millis(period_ms)) => {}
+        _ = period_rx.changed() => {}
+    }
 }
 
 /// Fetch detector and filewriter config parameters for a new series, concurrently.

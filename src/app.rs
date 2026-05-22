@@ -59,14 +59,24 @@ pub struct PumpkinApp {
 
     dcu_url: String,
     poll_period_ms: u64,
+    /// Poll period used when the window is visible but not focused (ms).
+    unfocused_poll_period_ms: u64,
     /// Pause live frame updates for this duration after zoom/pan. 0 = disabled.
     monitor_pause_ms: u64,
     connected: bool,
+    /// Sender side of the monitor poll-period control channel.
+    /// Send 0 to pause, any other value to set the interval in ms.
+    monitor_ctl_tx: Option<tokio::sync::watch::Sender<u64>>,
     /// Last time the user interacted with the viewport (zoom or pan).
     last_interaction_time: Option<std::time::Instant>,
     /// Whether the monitor was paused on the previous update; used to detect
     /// the pause-expiry transition and resume display immediately.
     was_paused: bool,
+    /// Last time any meaningful user input was detected (key, click, scroll).
+    /// Used for idle-based monitoring pause.
+    last_activity_time: std::time::Instant,
+    /// Pause monitoring after this many seconds of inactivity. 0 = disabled.
+    idle_pause_secs: u64,
 
     /// Latest frame from the monitor (single entry, replaced on every poll).
     monitor_frames: Vec<Arc<Frame>>,
@@ -167,7 +177,9 @@ impl PumpkinApp {
         _cc: &eframe::CreationContext,
         dcu_url: String,
         poll_period_ms: u64,
+        unfocused_poll_period_ms: u64,
         monitor_pause_ms: u64,
+        idle_pause_secs: u64,
         auto_connect: bool,
         contrast: ContrastState,
         overlays: OverlaySettings,
@@ -186,9 +198,14 @@ impl PumpkinApp {
             last_viewport_rect: egui::Rect::NOTHING,
             dcu_url,
             poll_period_ms,
+            unfocused_poll_period_ms,
             monitor_pause_ms,
             connected: false,
+            monitor_ctl_tx: None,
             last_interaction_time: None,
+            was_paused: false,
+            last_activity_time: std::time::Instant::now(),
+            idle_pause_secs,
             monitor_frames: Vec::new(),
             monitor_frame_index: 0,
             monitor_series_id: None,
@@ -200,7 +217,6 @@ impl PumpkinApp {
             monitor_prefetcher: MonitorPrefetcher::new(),
             monitor_contrast: (f32::NAN, f32::NAN, f32::NAN, Colormap::Inferno),
             on_demand_active: false,
-            was_paused: false,
             hdf5_series: None,
             hdf5_master_path: None,
             hdf5_frame_index: 0,
@@ -391,6 +407,14 @@ impl PumpkinApp {
         self.last_interaction_time
             .map(|t| t.elapsed().as_millis() < self.monitor_pause_ms as u128)
             .unwrap_or(false)
+    }
+
+    /// True if monitoring should be paused due to prolonged inactivity.
+    fn is_idle_paused(&self) -> bool {
+        if self.idle_pause_secs == 0 {
+            return false;
+        }
+        self.last_activity_time.elapsed().as_secs() >= self.idle_pause_secs
     }
 
     pub fn goto_frame(&mut self, ctx: &egui::Context) {
@@ -644,14 +668,16 @@ impl PumpkinApp {
         let cfg = MonitorConfig {
             dcu_url: self.dcu_url.clone(),
             api_version: "1.8.0".to_string(),
-            poll_period_ms: self.poll_period_ms,
         };
-        self.frame_rx = Some(start_monitor_task(cfg));
+        let (period_tx, period_rx) = tokio::sync::watch::channel(self.poll_period_ms);
+        self.frame_rx = Some(start_monitor_task(cfg, period_rx));
+        self.monitor_ctl_tx = Some(period_tx);
         self.connected = true;
     }
 
     fn disconnect(&mut self) {
         self.frame_rx = None;
+        self.monitor_ctl_tx = None;
         self.connected = false;
         self.monitor_frames.clear();
         self.monitor_series_id = None;
@@ -819,7 +845,9 @@ impl PumpkinApp {
             let series_id = self.monitor_series_id.unwrap_or(0);
             ui.horizontal(|ui| {
                 ui.heading("Monitor browser");
-                if self.interaction_paused() {
+                if self.is_idle_paused() {
+                    ui.label(egui::RichText::new("⏸ idle").color(egui::Color32::GRAY).small());
+                } else if self.interaction_paused() {
                     ui.label(egui::RichText::new("⏸ paused").color(egui::Color32::YELLOW).small());
                 } else if self.on_demand_active {
                     ui.label(egui::RichText::new("browsing").color(egui::Color32::from_rgb(100, 180, 255)).small());
@@ -1312,9 +1340,45 @@ impl eframe::App for PumpkinApp {
             ctx.request_repaint();
         }
 
-        // Keep polling while connected.
+        // Record activity on any key press, pointer click, or scroll wheel event.
+        // Mouse movement alone is ignored — it doesn't indicate intent to keep
+        // monitoring active.
+        let has_activity = ctx.input(|i| {
+            !i.events.is_empty() && i.events.iter().any(|e| matches!(
+                e,
+                egui::Event::Key { .. }
+                | egui::Event::PointerButton { .. }
+                | egui::Event::MouseWheel { .. }
+                | egui::Event::Zoom(_)
+            ))
+        });
+        if has_activity {
+            self.last_activity_time = std::time::Instant::now();
+        }
+
+        // Adjust the background poll rate based on window visibility/focus, and
+        // keep the UI ticking so new frames are displayed promptly.
         if self.connected {
-            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+            let focused   = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+            let idle      = self.is_idle_paused();
+
+            let desired_period = if minimized || idle {
+                0 // paused — no fetches while hidden or idle
+            } else if focused {
+                self.poll_period_ms
+            } else {
+                self.unfocused_poll_period_ms
+            };
+
+            if let Some(ref tx) = self.monitor_ctl_tx {
+                let _ = tx.send(desired_period);
+            }
+
+            // Only request repaints when the window can actually be seen.
+            if !minimized {
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            }
         }
 
         // While paused, schedule a repaint at the moment the pause expires so
