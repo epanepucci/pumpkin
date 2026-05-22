@@ -124,6 +124,8 @@ pub struct PumpkinApp {
     auto_region: bool,
     lock_zoom: bool,
     zoom_speed: f32,
+    /// Which accordion section is currently open: 0 = Data browser, 1 = Current dataset.
+    active_panel: usize,
     show_help: bool,
     show_panel: bool,
     show_actions: bool,
@@ -231,6 +233,7 @@ impl PumpkinApp {
             auto_region: false,
             lock_zoom: true,
             zoom_speed: 0.02,
+            active_panel: 1,
             show_help: false,
             show_panel: true,
             show_actions: false,
@@ -761,7 +764,50 @@ impl PumpkinApp {
         });
     }
 
+    /// Draw a styled accordion header. Returns true if it was clicked.
+    fn accordion_header(ui: &mut Ui, title: &str, is_open: bool) -> bool {
+        let height = 30.0;
+        let closed_bg = egui::Color32::from_rgb(0x76, 0x07, 0x59);
+        let open_bg   = egui::Color32::from_rgb(0x9e, 0x1a, 0x80);
+        let hover_bg  = egui::Color32::from_rgb(0x86, 0x17, 0x69);
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), height),
+            egui::Sense::click(),
+        );
+        if ui.is_rect_visible(rect) {
+            let fill = if is_open {
+                open_bg
+            } else if response.hovered() {
+                hover_bg
+            } else {
+                closed_bg
+            };
+            ui.painter().rect_filled(rect, 0.0, fill);
+            ui.painter().text(
+                rect.left_center() + egui::vec2(10.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                title,
+                egui::FontId::proportional(13.0),
+                egui::Color32::from_gray(220),
+            );
+        }
+        response.clicked()
+    }
+
     fn show_left_panel(&mut self, ui: &mut Ui) {
+        // -- Data browser --
+        if Self::accordion_header(ui, "Data browser", self.active_panel == 0) { self.active_panel = 0; }
+        if self.active_panel == 0 {
+            ui.add_space(6.0);
+            ui.label("(coming soon)");
+            ui.add_space(6.0);
+        }
+
+        // -- Current dataset --
+        if Self::accordion_header(ui, "Current dataset", self.active_panel == 1) { self.active_panel = 1; }
+        if self.active_panel == 1 {
+
+        ui.add_space(4.0);
         ui.heading("Metadata");
         if let Some(ref frame) = self.frame {
             let meta = &frame.metadata;
@@ -1059,6 +1105,8 @@ impl PumpkinApp {
                 );
             }
         }
+        } // end active_panel == 1
+
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
