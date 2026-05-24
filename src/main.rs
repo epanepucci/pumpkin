@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod data_browser;
 mod png_export;
 mod frame;
 mod hdf5_loader;

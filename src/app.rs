@@ -140,6 +140,8 @@ pub struct PumpkinApp {
     last_location: Option<std::path::PathBuf>,
 
     file_dialog: FileDialog,
+
+    data_browser: crate::data_browser::DataBrowser,
 }
 
 impl PumpkinApp {
@@ -244,6 +246,7 @@ impl PumpkinApp {
             last_location: Self::load_last_location(),
             file_dialog: FileDialog::new()
                 .add_file_filter_extensions("HDF5 master", vec!["h5"]),
+            data_browser: crate::data_browser::DataBrowser::new(),
         };
         if auto_connect {
             app.connect();
@@ -794,13 +797,15 @@ impl PumpkinApp {
         response.clicked()
     }
 
-    fn show_left_panel(&mut self, ui: &mut Ui) {
+    fn show_left_panel(&mut self, ui: &mut Ui) -> Option<std::path::PathBuf> {
+        let mut panel_action: Option<std::path::PathBuf> = None;
+
         // -- Data browser --
         if Self::accordion_header(ui, "Data browser", self.active_panel == 0) { self.active_panel = 0; }
         if self.active_panel == 0 {
-            ui.add_space(6.0);
-            ui.label("(coming soon)");
-            ui.add_space(6.0);
+            if let Some(path) = self.data_browser.show(ui) {
+                panel_action = Some(path);
+            }
         }
 
         // -- Current dataset --
@@ -1122,6 +1127,8 @@ impl PumpkinApp {
             });
             ui.separator();
         });
+
+        panel_action
     }
 
     fn show_viewport(&mut self, ctx: &Context, ui: &mut Ui) {
@@ -1464,11 +1471,28 @@ impl eframe::App for PumpkinApp {
             }
         }
 
+        // Poll data browser background loads; request repaint while loading.
+        if self.data_browser.poll() { ctx.request_repaint(); }
+        if self.data_browser.is_loading() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+
+        let mut browser_file: Option<std::path::PathBuf> = None;
         SidePanel::left("left_panel").resizable(true).default_width(240.0).show_animated(ctx, self.show_panel, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
-                self.show_left_panel(ui);
+                browser_file = self.show_left_panel(ui);
             });
         });
+        if let Some(path) = browser_file {
+            self.disconnect();
+            if let Some(parent) = path.parent() {
+                self.last_location = Some(parent.to_path_buf());
+                self.save_last_location();
+            }
+            if let Err(e) = self.load_hdf5_master(&path) {
+                eprintln!("Data browser: failed to open {}: {e}", path.display());
+            }
+        }
 
         CentralPanel::default().show(ctx, |ui| {
             self.show_viewport(ctx, ui);
