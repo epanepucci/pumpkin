@@ -200,12 +200,14 @@ struct VisitNode {
     visit_path: PathBuf,
     open: bool,
     proteins: Async<Vec<ProteinNode>>,
+    file_filter: String,
 }
 
 struct ProposalNode {
     number: String,
     open: bool,
     visits: Async<Vec<VisitNode>>,
+    visit_filter: String,
 }
 
 // ─── Background loaders ───────────────────────────────────────────────────────
@@ -224,6 +226,7 @@ fn bg_load_visits(proposal: String) -> Result<Vec<VisitNode>, String> {
                 visit_path: e.path(),
                 open: false,
                 proteins: Async::Idle,
+                file_filter: String::new(),
             })
         })
         .collect();
@@ -295,6 +298,33 @@ impl ProteinNode {
 
 // ─── UI rendering ─────────────────────────────────────────────────────────────
 
+fn filter_matches(label: &str, filter: &str) -> bool {
+    filter.is_empty() || label.to_lowercase().contains(filter)
+}
+
+fn filter_bar(ui: &mut egui::Ui, value: &mut String, hint: &str) {
+    ui.add_space(2.0);
+    // Capture available_width from the *vertical* layout context — inside a
+    // ui.horizontal() the max_rect is infinite in x, making available_width()
+    // unreliable.  add_sized then forces the TextEdit to exactly this width so
+    // the horizontal layout never reports a wider min_rect than the panel.
+    let total_w = ui.available_width();
+    let btn_w = ui.spacing().interact_size.x + ui.spacing().item_spacing.x;
+    let edit_h = ui.spacing().interact_size.y;
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            egui::vec2((total_w - btn_w).max(20.0), edit_h),
+            egui::TextEdit::singleline(value)
+                .hint_text(hint)
+                .font(egui::TextStyle::Small),
+        );
+        if !value.is_empty() && ui.small_button("✕").clicked() {
+            value.clear();
+        }
+    });
+    ui.add_space(2.0);
+}
+
 impl DatasetNode {
     fn show(&self, ui: &mut egui::Ui) -> bool {
         let response = ui.add(
@@ -323,7 +353,7 @@ fn loading_row(ui: &mut egui::Ui) {
 }
 
 impl ProteinNode {
-    fn show(&mut self, ui: &mut egui::Ui) -> Option<PathBuf> {
+    fn show(&mut self, ui: &mut egui::Ui, file_filter: &str) -> Option<PathBuf> {
         if tree_row(ui, self.open, &self.name) {
             self.open = !self.open;
             if self.open && self.datasets.is_idle() {
@@ -344,7 +374,9 @@ impl ProteinNode {
                             ui.label(egui::RichText::new("No datasets found").small().weak());
                         }
                         for ds in datasets.iter() {
-                            if ds.show(ui) { action = Some(ds.path.clone()); }
+                            if filter_matches(&ds.name, file_filter) {
+                                if ds.show(ui) { action = Some(ds.path.clone()); }
+                            }
                         }
                     }
                 }
@@ -367,6 +399,8 @@ impl VisitNode {
         let mut action = None;
         if self.open {
             ui.indent(&self.visit_path, |ui| {
+                filter_bar(ui, &mut self.file_filter, "Filter filenames…");
+                let file_filter = self.file_filter.to_lowercase();
                 match &mut self.proteins {
                     Async::Idle    => {}
                     Async::Loading(_) => loading_row(ui),
@@ -376,7 +410,7 @@ impl VisitNode {
                             ui.label(egui::RichText::new("No proteins found").small().weak());
                         }
                         for p in proteins.iter_mut() {
-                            if let Some(path) = p.show(ui) { action = Some(path); }
+                            if let Some(path) = p.show(ui, &file_filter) { action = Some(path); }
                         }
                     }
                 }
@@ -399,6 +433,8 @@ impl ProposalNode {
         let mut action = None;
         if self.open {
             ui.indent(&self.number, |ui| {
+                filter_bar(ui, &mut self.visit_filter, "Filter dates…");
+                let visit_filter = self.visit_filter.to_lowercase();
                 match &mut self.visits {
                     Async::Idle    => {}
                     Async::Loading(_) => loading_row(ui),
@@ -408,7 +444,9 @@ impl ProposalNode {
                             ui.label(egui::RichText::new("No visits found").small().weak());
                         }
                         for v in visits.iter_mut() {
-                            if let Some(path) = v.show(ui) { action = Some(path); }
+                            if filter_matches(&v.date, &visit_filter) {
+                                if let Some(path) = v.show(ui) { action = Some(path); }
+                            }
                         }
                     }
                 }
@@ -427,6 +465,7 @@ enum RootState {
 
 pub struct DataBrowser {
     state: RootState,
+    proposal_filter: String,
 }
 
 impl DataBrowser {
@@ -440,7 +479,7 @@ impl DataBrowser {
         } else {
             Self::start_group_fetch()
         };
-        Self { state }
+        Self { state, proposal_filter: String::new() }
     }
 
     fn make_proposal_nodes(proposals: &[String]) -> Vec<ProposalNode> {
@@ -448,8 +487,9 @@ impl DataBrowser {
             number: p.clone(),
             open: false,
             visits: Async::Idle,
+            visit_filter: String::new(),
         }).collect();
-        nodes.sort_by(|a, b| b.number.cmp(&a.number)); // most recent first
+        nodes.sort_by(|a, b| b.number.cmp(&a.number));
         nodes
     }
 
@@ -493,9 +533,11 @@ impl DataBrowser {
 
     /// Render the browser. Returns `Some(path)` if the user clicked a dataset.
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<PathBuf> {
+        filter_bar(ui, &mut self.proposal_filter, "Filter proposals…");
+        let proposal_filter = self.proposal_filter.to_lowercase();
+
         match &mut self.state {
             RootState::FetchingGroups(_) => {
-                ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label("Looking up proposals…");
@@ -504,14 +546,15 @@ impl DataBrowser {
             }
             RootState::Ready(proposals) => {
                 if proposals.is_empty() {
-                    ui.add_space(8.0);
                     ui.label(egui::RichText::new("No proposals found.").weak());
                     return None;
                 }
                 let mut action = None;
                 for proposal in proposals.iter_mut() {
-                    if let Some(path) = proposal.show(ui) {
-                        action = Some(path);
+                    if filter_matches(&proposal.number, &proposal_filter) {
+                        if let Some(path) = proposal.show(ui) {
+                            action = Some(path);
+                        }
                     }
                 }
                 action
