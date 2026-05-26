@@ -693,6 +693,8 @@ impl PumpkinApp {
     }
 
     fn connect(&mut self) {
+        self.hdf5_series = None;
+        self.hdf5_master_path = None;
         let cfg = MonitorConfig {
             dcu_url: self.dcu_url.clone(),
             api_version: "1.8.0".to_string(),
