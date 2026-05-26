@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 
 use hdf5_metno as hdf5;
 
@@ -182,10 +182,17 @@ fn rd_f64(f: &hdf5::File, path: &str) -> Option<f64> {
 
 // ─── Tree nodes ───────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
 struct DatasetNode {
     name: String,
     path: PathBuf,
-    meta: DatasetMeta,
+    meta: Arc<Mutex<Option<DatasetMeta>>>,
+}
+
+impl DatasetNode {
+    fn is_loading(&self) -> bool {
+        self.meta.lock().map(|m| m.is_none()).unwrap_or(false)
+    }
 }
 
 struct ProteinNode {
@@ -249,15 +256,29 @@ fn bg_load_datasets(protein_path: PathBuf) -> Result<Vec<DatasetNode>, String> {
     let mut masters = Vec::new();
     find_master_files(&protein_path, 2, &mut masters);
     masters.sort();
-    let nodes = masters.into_iter().map(|path| {
+    let nodes: Vec<DatasetNode> = masters.into_iter().map(|path| {
         let name = path.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .trim_end_matches("_master.h5")
             .to_string();
-        let meta = read_meta(&path);
-        DatasetNode { name, path, meta }
+        DatasetNode {
+            name,
+            path,
+            meta: Arc::new(Mutex::new(None)),
+        }
     }).collect();
+
+    let nodes_for_bg = nodes.clone();
+    std::thread::spawn(move || {
+        for node in nodes_for_bg {
+            let meta = read_meta(&node.path);
+            if let Ok(mut m) = node.meta.lock() {
+                *m = Some(meta);
+            }
+        }
+    });
+
     Ok(nodes)
 }
 
@@ -293,7 +314,10 @@ impl VisitNode {
 
 impl ProteinNode {
     fn poll(&mut self) -> bool { self.datasets.poll() }
-    fn is_loading(&self) -> bool { self.datasets.is_loading() }
+    fn is_loading(&self) -> bool {
+        self.datasets.is_loading()
+            || matches!(&self.datasets, Async::Done(nodes) if nodes.iter().any(|n| n.is_loading()))
+    }
 }
 
 // ─── UI rendering ─────────────────────────────────────────────────────────────
@@ -331,13 +355,20 @@ impl DatasetNode {
             egui::Label::new(egui::RichText::new(&self.name).monospace().small())
                 .sense(egui::Sense::click()),
         );
-        let mut parts = Vec::<String>::new();
-        if let Some(n) = self.meta.ntrigger { parts.push(format!("ntrigger:{n}")); }
-        if let Some(n) = self.meta.nimages  { parts.push(format!("nimages:{n}")); }
-        if let Some(t) = self.meta.total    { parts.push(format!("total:{t}")); }
-        if let Some(e) = self.meta.exp_ms   { parts.push(format!("exp:{:.1}ms", e)); }
-        if !parts.is_empty() {
-            ui.label(egui::RichText::new(parts.join("  ")).small().weak());
+
+        if let Ok(meta_guard) = self.meta.lock() {
+            if let Some(meta) = &*meta_guard {
+                let mut parts = Vec::<String>::new();
+                if let Some(n) = meta.ntrigger { parts.push(format!("ntrigger:{n}")); }
+                if let Some(n) = meta.nimages  { parts.push(format!("nimages:{n}")); }
+                if let Some(t) = meta.total    { parts.push(format!("total:{t}")); }
+                if let Some(e) = meta.exp_ms   { parts.push(format!("exp:{:.1}ms", e)); }
+                if !parts.is_empty() {
+                    ui.label(egui::RichText::new(parts.join("  ")).small().weak());
+                }
+            } else {
+                ui.label(egui::RichText::new("…").small().weak());
+            }
         }
         response.clicked()
     }
