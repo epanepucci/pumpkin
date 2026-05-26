@@ -9,6 +9,7 @@ mod hdf5_prefetch;
 mod image_render;
 mod monitor;
 mod monitor_prefetch;
+mod remote;
 mod tiff_loader;
 mod viewport;
 
@@ -177,6 +178,9 @@ fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     let _guard = rt.enter();
 
+    let remote_port = cfg.remote_port.unwrap_or(8100);
+    let remote_rx = remote::start_remote_listener(remote_port);
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Pumpkin — X-ray diffraction viewer")
@@ -196,7 +200,7 @@ fn main() -> anyhow::Result<()> {
             if let Some(scale) = ui_scale {
                 cc.egui_ctx.set_pixels_per_point(scale);
             }
-            Ok(Box::new(PumpkinApp::new(cc, dcu_url, poll_period_ms, unfocused_poll_period_ms, monitor_pause_ms, idle_pause_secs, auto_connect, contrast, overlays, splash_folder)))
+            Ok(Box::new(PumpkinApp::new(cc, dcu_url, poll_period_ms, unfocused_poll_period_ms, monitor_pause_ms, idle_pause_secs, auto_connect, contrast, overlays, splash_folder, remote_rx)))
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;

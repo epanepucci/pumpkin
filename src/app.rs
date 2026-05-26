@@ -145,6 +145,8 @@ pub struct PumpkinApp {
 
     dozor_data: Option<crate::dozor::DozorData>,
     dozor_collapsed: bool,
+
+    remote_rx: tokio::sync::mpsc::UnboundedReceiver<crate::remote::RemoteCmd>,
 }
 
 impl PumpkinApp {
@@ -192,6 +194,7 @@ impl PumpkinApp {
         contrast: ContrastState,
         overlays: OverlaySettings,
         splash_folder: Option<std::path::PathBuf>,
+        remote_rx: tokio::sync::mpsc::UnboundedReceiver<crate::remote::RemoteCmd>,
     ) -> Self {
         let (on_demand_tx, on_demand_rx) = std::sync::mpsc::sync_channel(4);
         let mut app = Self {
@@ -252,6 +255,7 @@ impl PumpkinApp {
             data_browser: crate::data_browser::DataBrowser::new(),
             dozor_data: None,
             dozor_collapsed: false,
+            remote_rx,
         };
         if auto_connect {
             app.connect();
@@ -636,6 +640,28 @@ impl PumpkinApp {
         self.pending_fit = true;
     }
 
+    fn handle_remote_cmd(&mut self, cmd: crate::remote::RemoteCmd) {
+        let path = cmd.file.as_path();
+        if self.hdf5_master_path.as_deref() != Some(path) {
+            if let Err(e) = self.load_hdf5_master(path) {
+                eprintln!("Remote: failed to load {}: {e:#}", path.display());
+                return;
+            }
+        }
+        let grouping = self.hdf5_grouping.max(1);
+        let snapped = (cmd.frame / grouping) * grouping;
+        let snapped = if let Some(ref s) = self.hdf5_series {
+            snapped.min(s.total_frames.saturating_sub(1))
+        } else {
+            snapped
+        };
+        self.hdf5_frame_index = snapped;
+        self.load_hdf5_grouped(snapped);
+        // Hold the live monitor display in place while showing a remote HDF5 frame.
+        // on_monitor_batch clears this when a new detector series is detected.
+        self.on_demand_active = true;
+    }
+
     fn on_monitor_batch(&mut self, batch: MonitorBatch) {
         let new_series = Some(batch.series_id) != self.monitor_series_id;
         self.monitor_series_id = Some(batch.series_id);
@@ -644,8 +670,10 @@ impl PumpkinApp {
         self.monitor_frames = batch.frames;
 
         if new_series {
-            // New series: always go live, discard any on-demand selection.
+            // New series: always go live, discard any on-demand or remote HDF5 selection.
             self.on_demand_active = false;
+            self.hdf5_series = None;
+            self.hdf5_master_path = None;
             self.monitor_selected_id = self.monitor_image_ids.last().copied();
             self.monitor_frame_index = self.monitor_frames.len().saturating_sub(1);
             if !self.lock_zoom {
@@ -1491,6 +1519,12 @@ impl eframe::App for PumpkinApp {
             self.monitor_prefetcher.invalidate();
             self.on_demand_active = true;
             self.display_frame(Arc::new(frame));
+            ctx.request_repaint();
+        }
+
+        // Receive remote commands (load HDF5 file + frame from external client).
+        while let Ok(cmd) = self.remote_rx.try_recv() {
+            self.handle_remote_cmd(cmd);
             ctx.request_repaint();
         }
 

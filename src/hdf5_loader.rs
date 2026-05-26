@@ -64,13 +64,18 @@ impl Hdf5Series {
             .unwrap_or(u16::MAX);
         eprintln!("HDF5: saturation_value = {saturation_value}");
 
-        // --- Total frames ---
-        let total_frames = master
+        // --- Total frames: ntrigger * nimages ---
+        let nimages = master
             .dataset("/entry/instrument/detector/detectorSpecific/nimages")
             .ok()
             .and_then(|ds| ds.read_scalar::<u64>().ok())
-            .map(|v| v as usize)
             .unwrap_or(0);
+        let ntrigger = master
+            .dataset("/entry/instrument/detector/detectorSpecific/ntrigger")
+            .ok()
+            .and_then(|ds| ds.read_scalar::<u64>().ok())
+            .unwrap_or(1);
+        let total_frames = (nimages * ntrigger) as usize;
 
         if total_frames == 0 {
             bail!("Cannot determine number of frames from master file");

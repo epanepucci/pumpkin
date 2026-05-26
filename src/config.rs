@@ -60,6 +60,10 @@ pub struct Config {
     /// Increase for high-DPI displays or larger widgets; decrease to fit more on screen.
     #[serde(alias = "ui-scale")]
     pub ui_scale: Option<f32>,
+    /// TCP port for the remote control interface. Default is 8100.
+    /// Send newline-delimited JSON: {"file": "/path/to/master.h5", "frame": 42}
+    #[serde(alias = "remote-port")]
+    pub remote_port: Option<u16>,
     pub contrast: ContrastConfig,
     #[serde(alias = "resolution-rings")]
     pub resolution_rings: RingConfig,
