@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod data_browser;
+mod dozor;
 mod png_export;
 mod frame;
 mod hdf5_loader;

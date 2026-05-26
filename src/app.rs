@@ -142,6 +142,9 @@ pub struct PumpkinApp {
     file_dialog: FileDialog,
 
     data_browser: crate::data_browser::DataBrowser,
+
+    dozor_data: Option<crate::dozor::DozorData>,
+    dozor_collapsed: bool,
 }
 
 impl PumpkinApp {
@@ -247,6 +250,8 @@ impl PumpkinApp {
             file_dialog: FileDialog::new()
                 .add_file_filter_extensions("HDF5 master", vec!["h5"]),
             data_browser: crate::data_browser::DataBrowser::new(),
+            dozor_data: None,
+            dozor_collapsed: false,
         };
         if auto_connect {
             app.connect();
@@ -335,6 +340,9 @@ impl PumpkinApp {
         self.hdf5_series = Some(series);
         self.hdf5_frame_index = 0;
         self.on_new_frame(Arc::new(first));
+        self.dozor_data = crate::dozor::find_dozor_json(path)
+            .and_then(|p| crate::dozor::load_dozor(&p));
+        self.dozor_collapsed = false;
         Ok(())
     }
 
@@ -704,6 +712,7 @@ impl PumpkinApp {
         self.monitor_frame_index = 0;
         self.on_demand_active = false;
         self.monitor_prefetcher.invalidate();
+        self.dozor_data = None;
     }
 
     fn poll_new_frame(&mut self) -> bool {
@@ -799,14 +808,6 @@ impl PumpkinApp {
 
     fn show_left_panel(&mut self, ui: &mut Ui) -> Option<std::path::PathBuf> {
         let mut panel_action: Option<std::path::PathBuf> = None;
-
-        // -- Data browser --
-        if Self::accordion_header(ui, "Data browser", self.active_panel == 0) { self.active_panel = 0; }
-        if self.active_panel == 0 {
-            if let Some(path) = self.data_browser.show(ui) {
-                panel_action = Some(path);
-            }
-        }
 
         // -- Current dataset --
         if Self::accordion_header(ui, "Current dataset", self.active_panel == 1) { self.active_panel = 1; }
@@ -1112,6 +1113,15 @@ impl PumpkinApp {
         }
         } // end active_panel == 1
 
+        // -- Data browser --
+        if Self::accordion_header(ui, "Data browser", self.active_panel == 0) { self.active_panel = 0; }
+        if self.active_panel == 0 {
+            if let Some(path) = self.data_browser.show(ui) {
+                panel_action = Some(path);
+            }
+        }
+
+
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -1132,9 +1142,26 @@ impl PumpkinApp {
     }
 
     fn show_viewport(&mut self, ctx: &Context, ui: &mut Ui) {
-        let available = ui.available_rect_before_wrap();
+        let total_rect = ui.available_rect_before_wrap();
+
+        // Reserve the bottom quarter for the Dozor quality chart when data is present and not collapsed.
+        let chart_visible = self.dozor_data.is_some() && !self.dozor_collapsed;
+        let available = if chart_visible {
+            total_rect.with_max_y(total_rect.min.y + total_rect.height() * 0.75)
+        } else {
+            total_rect
+        };
+
         self.last_viewport_rect = available;
         let response = ui.allocate_rect(available, egui::Sense::click_and_drag());
+
+        // Allocate the chart area now so egui accounts for it in the layout.
+        let chart_response = if chart_visible {
+            let crect = total_rect.with_min_y(available.max.y);
+            Some(ui.allocate_rect(crect, egui::Sense::click()))
+        } else {
+            None
+        };
 
         let Some(ref frame) = self.frame.clone() else {
             if !self.splash_loaded {
@@ -1255,6 +1282,66 @@ impl PumpkinApp {
                     egui::Color32::WHITE,
                 );
             }
+        }
+
+        // Dozor toggle button — shown whenever dozor data is loaded.
+        if self.dozor_data.is_some() {
+            let label = if self.dozor_collapsed { "▲ Dozor" } else { "▼ Dozor" };
+            let btn_w = 58.0_f32;
+            let btn_h = 15.0_f32;
+            let btn_rect = egui::Rect::from_min_size(
+                egui::pos2(available.right() - btn_w - 6.0, available.bottom() - btn_h - 4.0),
+                egui::vec2(btn_w, btn_h),
+            );
+            let toggle_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+            ui.painter().rect_filled(
+                btn_rect,
+                3.0,
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 170),
+            );
+            ui.painter().text(
+                btn_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(11.0),
+                egui::Color32::WHITE,
+            );
+            if toggle_resp.clicked() {
+                self.dozor_collapsed = !self.dozor_collapsed;
+            }
+        }
+
+        // Dozor quality chart in the bottom quarter.
+        let mut chart_clicked_idx: Option<usize> = None;
+        if let (Some(data), Some(cresp)) = (&self.dozor_data, chart_response) {
+            let crect = total_rect.with_min_y(available.max.y);
+            crate::dozor::draw_chart(ui.painter(), crect, data, self.hdf5_frame_index);
+
+            // Click to navigate to frame.
+            if cresp.clicked() {
+                if let Some(cpos) = cresp.interact_pointer_pos() {
+                    let t   = ((cpos.x - crect.left()) / crect.width()).clamp(0.0, 1.0);
+                    let idx = (t * (data.frames.len().saturating_sub(1)) as f32).round() as usize;
+                    chart_clicked_idx = Some(idx);
+                }
+            }
+
+            // Hover tooltip (consumes cresp, must be last).
+            if let Some(hpos) = cresp.hover_pos() {
+                let t   = ((hpos.x - crect.left()) / crect.width()).clamp(0.0, 1.0);
+                let idx = (t * (data.frames.len().saturating_sub(1)) as f32).round() as usize;
+                if let Some(f) = data.frames.get(idx) {
+                    cresp.on_hover_text(format!(
+                        "Frame {}\nScore: {:.1}\nSpots: {}\nRes: {:.3} Å",
+                        idx + 1, f.score, f.spots as u32, f.resolution
+                    ));
+                }
+            }
+        }
+        // Apply chart navigation outside the dozor_data borrow.
+        if let Some(idx) = chart_clicked_idx {
+            self.hdf5_frame_index = idx;
+            self.load_hdf5_grouped(idx);
         }
     }
 }
