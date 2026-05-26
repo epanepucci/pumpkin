@@ -185,7 +185,7 @@ fn rd_f64(f: &hdf5::File, path: &str) -> Option<f64> {
 struct DatasetNode {
     name: String,
     path: PathBuf,
-    meta: DatasetMeta,
+    meta: Async<DatasetMeta>,
 }
 
 struct ProteinNode {
@@ -255,7 +255,8 @@ fn bg_load_datasets(protein_path: PathBuf) -> Result<Vec<DatasetNode>, String> {
             .unwrap_or("")
             .trim_end_matches("_master.h5")
             .to_string();
-        let meta = read_meta(&path);
+        let p = path.clone();
+        let meta = spawn_load(move || Ok(read_meta(&p)));
         DatasetNode { name, path, meta }
     }).collect();
     Ok(nodes)
@@ -292,8 +293,17 @@ impl VisitNode {
 }
 
 impl ProteinNode {
-    fn poll(&mut self) -> bool { self.datasets.poll() }
-    fn is_loading(&self) -> bool { self.datasets.is_loading() }
+    fn poll(&mut self) -> bool {
+        let mut changed = self.datasets.poll();
+        if let Async::Done(datasets) = &mut self.datasets {
+            for d in datasets.iter_mut() { changed |= d.meta.poll(); }
+        }
+        changed
+    }
+    fn is_loading(&self) -> bool {
+        self.datasets.is_loading()
+            || matches!(&self.datasets, Async::Done(ds) if ds.iter().any(|d| d.meta.is_loading()))
+    }
 }
 
 // ─── UI rendering ─────────────────────────────────────────────────────────────
@@ -331,13 +341,19 @@ impl DatasetNode {
             egui::Label::new(egui::RichText::new(&self.name).monospace().small())
                 .sense(egui::Sense::click()),
         );
-        let mut parts = Vec::<String>::new();
-        if let Some(n) = self.meta.ntrigger { parts.push(format!("ntrigger:{n}")); }
-        if let Some(n) = self.meta.nimages  { parts.push(format!("nimages:{n}")); }
-        if let Some(t) = self.meta.total    { parts.push(format!("total:{t}")); }
-        if let Some(e) = self.meta.exp_ms   { parts.push(format!("exp:{:.1}ms", e)); }
-        if !parts.is_empty() {
-            ui.label(egui::RichText::new(parts.join("  ")).small().weak());
+        match &self.meta {
+            Async::Loading(_) => { ui.spinner(); }
+            Async::Done(meta) => {
+                let mut parts = Vec::<String>::new();
+                if let Some(n) = meta.ntrigger { parts.push(format!("ntrigger:{n}")); }
+                if let Some(n) = meta.nimages  { parts.push(format!("nimages:{n}")); }
+                if let Some(t) = meta.total    { parts.push(format!("total:{t}")); }
+                if let Some(e) = meta.exp_ms   { parts.push(format!("exp:{:.1}ms", e)); }
+                if !parts.is_empty() {
+                    ui.label(egui::RichText::new(parts.join("  ")).small().weak());
+                }
+            }
+            _ => {}
         }
         response.clicked()
     }
