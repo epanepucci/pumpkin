@@ -22,11 +22,12 @@
 #   scripts/build-rocky8.sh [--no-cache]
 #
 # Output:
-#   ./pumpkin-rocky8   — the release binary, ready to scp to the target host
+#   ./builds/pumpkin-rocky8   — the release binary, ready to scp to the target host
 
 set -euo pipefail
 
 IMAGE="pumpkin-rocky8-builder"
+OUTPUT_DIR="builds"
 OUTPUT="pumpkin-rocky8"
 EXTRACT_DIR="$(mktemp -d)"
 
@@ -37,6 +38,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+BUILD_DIR="$REPO_ROOT/$OUTPUT_DIR"
 
 # Build each stage with an explicit tag.  Named images are not removed by
 # "docker system prune", so the cache survives routine cleanup.
@@ -64,12 +66,13 @@ docker build $DOCKER_FLAGS \
     -f "$REPO_ROOT/Dockerfile" \
     "$REPO_ROOT"
 
-cp "$EXTRACT_DIR/pumpkin" "$REPO_ROOT/$OUTPUT"
+mkdir -p "$BUILD_DIR"
+cp "$EXTRACT_DIR/pumpkin" "$BUILD_DIR/$OUTPUT"
 rm -rf "$EXTRACT_DIR"
 
-chmod +x "$REPO_ROOT/$OUTPUT"
+chmod +x "$BUILD_DIR/$OUTPUT"
 echo ""
-echo "Done: $REPO_ROOT/$OUTPUT"
+echo "Done: $BUILD_DIR/$OUTPUT"
 echo ""
 echo "Runtime dependencies on the target Rocky Linux 8 machine:"
 echo "  dnf install -y epel-release"
