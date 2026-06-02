@@ -5,7 +5,6 @@ mod dozor;
 mod png_export;
 mod frame;
 mod hdf5_loader;
-mod hdf5_prefetch;
 mod image_render;
 mod monitor;
 mod monitor_prefetch;
@@ -180,6 +179,11 @@ fn main() -> anyhow::Result<()> {
 
     let remote_port = cfg.remote_port.unwrap_or(8100);
     let remote_rx = remote::start_remote_listener(remote_port);
+    let commands_file = cfg.commands_file.clone();
+    let commands_file_enabled = cfg
+        .commands_file_enabled
+        .unwrap_or(commands_file.is_some());
+    let commands_file_poll_interval_ms = cfg.commands_file_poll_interval_ms.unwrap_or(500);
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -200,7 +204,7 @@ fn main() -> anyhow::Result<()> {
             if let Some(scale) = ui_scale {
                 cc.egui_ctx.set_pixels_per_point(scale);
             }
-            Ok(Box::new(PumpkinApp::new(cc, dcu_url, poll_period_ms, unfocused_poll_period_ms, monitor_pause_ms, idle_pause_secs, auto_connect, contrast, overlays, splash_folder, remote_rx)))
+            Ok(Box::new(PumpkinApp::new(cc, dcu_url, poll_period_ms, unfocused_poll_period_ms, monitor_pause_ms, idle_pause_secs, auto_connect, contrast, overlays, splash_folder, remote_rx, commands_file, commands_file_enabled, commands_file_poll_interval_ms)))
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;

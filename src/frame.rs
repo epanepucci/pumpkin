@@ -29,10 +29,6 @@ pub struct FrameMetadata {
     pub pixel_size_x: Option<f64>,
     pub pixel_size_y: Option<f64>,
 
-    /// Threshold energy in eV (first threshold).
-    #[allow(dead_code)]
-    pub threshold_energy: Option<f64>,
-
     /// Incident beam energy in eV.
     pub incident_energy: Option<f64>,
 

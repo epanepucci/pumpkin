@@ -51,18 +51,6 @@ pub struct MonitorBatch {
     pub metadata: FrameMetadata,
 }
 
-#[allow(dead_code)]
-/// Enable the monitor interface on the detector (blocking helper).
-pub fn enable_monitor(client: &reqwest::blocking::Client, cfg: &MonitorConfig) -> Result<()> {
-    let url = cfg.config_url("mode");
-    let body = serde_json::json!({ "value": "enabled" });
-    let resp = client.put(&url).json(&body).send().context("PUT monitor mode")?;
-    if !resp.status().is_success() {
-        anyhow::bail!("Enable monitor failed: HTTP {}", resp.status());
-    }
-    Ok(())
-}
-
 /// Spawn a background task that polls the monitor buffer list and sends decoded
 /// frames over a `watch` channel.
 ///

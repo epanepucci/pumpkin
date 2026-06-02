@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use hdf5_metno as hdf5;
 use ndarray::s;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::frame::{Frame, FrameMetadata};
 
@@ -11,14 +11,10 @@ use crate::frame::{Frame, FrameMetadata};
 /// external links to the data files are resolved without re-opening.
 pub struct Hdf5Series {
     master: hdf5::File,
-    #[allow(dead_code)]
-    master_dir: PathBuf,
     /// Total number of frames across all data files.
     pub total_frames: usize,
     /// Number of frames stored per data file.
     frames_per_file: usize,
-    #[allow(dead_code)]
-    num_data_files: usize,
     pub saturation_value: u16,
     /// Metadata that is the same for every frame in the series.
     pub series_metadata: FrameMetadata,
@@ -30,8 +26,6 @@ impl Hdf5Series {
     /// `master_path` must be the `*_master.h5` file.  The data files
     /// (`*_data_000001.h5`, …) are expected to be in the same directory.
     pub fn open(master_path: &Path) -> Result<Self> {
-        let master_dir = master_path.parent().unwrap_or(Path::new(".")).to_path_buf();
-
         let master = hdf5::File::open(master_path)
             .with_context(|| format!("Cannot open master file: {}", master_path.display()))?;
 
@@ -101,10 +95,8 @@ impl Hdf5Series {
 
         Ok(Self {
             master,
-            master_dir,
             total_frames,
             frames_per_file,
-            num_data_files,
             saturation_value,
             series_metadata,
         })

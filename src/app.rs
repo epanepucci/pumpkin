@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use egui::{CentralPanel, Context, Key, KeyboardShortcut, Modifiers, ScrollArea, SidePanel, Ui};
 use egui_file_dialog::FileDialog;
@@ -147,6 +148,11 @@ pub struct PumpkinApp {
     dozor_collapsed: bool,
 
     remote_rx: tokio::sync::mpsc::UnboundedReceiver<crate::remote::RemoteCmd>,
+    commands_file_enabled: bool,
+    commands_file_path: String,
+    commands_file_poll_interval_ms: u64,
+    commands_file_watcher: Option<crate::remote::CommandsFileWatcher>,
+    commands_file_rx: Option<tokio::sync::mpsc::UnboundedReceiver<crate::remote::RemoteCmd>>,
 }
 
 impl PumpkinApp {
@@ -195,6 +201,9 @@ impl PumpkinApp {
         overlays: OverlaySettings,
         splash_folder: Option<std::path::PathBuf>,
         remote_rx: tokio::sync::mpsc::UnboundedReceiver<crate::remote::RemoteCmd>,
+        commands_file: Option<std::path::PathBuf>,
+        commands_file_enabled: bool,
+        commands_file_poll_interval_ms: u64,
     ) -> Self {
         let (on_demand_tx, on_demand_rx) = std::sync::mpsc::sync_channel(4);
         let mut app = Self {
@@ -256,7 +265,18 @@ impl PumpkinApp {
             dozor_data: None,
             dozor_collapsed: false,
             remote_rx,
+            commands_file_enabled: false,
+            commands_file_path: commands_file
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            commands_file_poll_interval_ms,
+            commands_file_watcher: None,
+            commands_file_rx: None,
         };
+        if commands_file_enabled {
+            app.set_commands_file_enabled(true);
+        }
         if auto_connect {
             app.connect();
         }
@@ -569,6 +589,29 @@ impl PumpkinApp {
                 }
 
                 ui.add_space(8.0);
+                ui.heading("Commands file");
+                let mut enabled = self.commands_file_enabled;
+                if ui.checkbox(&mut enabled, "Enabled").changed() {
+                    self.set_commands_file_enabled(enabled);
+                }
+                egui::Grid::new("commands_file_grid").num_columns(2).show(ui, |ui| {
+                    ui.label("Path");
+                    let path_resp = ui.text_edit_singleline(&mut self.commands_file_path);
+                    ui.end_row();
+                    ui.label("Interval");
+                    let interval_resp = ui.add(
+                        egui::DragValue::new(&mut self.commands_file_poll_interval_ms)
+                            .speed(50.0)
+                            .range(50..=60_000)
+                            .suffix(" ms"),
+                    );
+                    ui.end_row();
+                    if (path_resp.lost_focus() || interval_resp.changed()) && self.commands_file_enabled {
+                        self.restart_commands_file_watcher();
+                    }
+                });
+
+                ui.add_space(8.0);
                 ui.heading("Overlays");
 
                 ui.checkbox(&mut self.overlays.show_beam_center, "Beam center");
@@ -612,6 +655,44 @@ impl PumpkinApp {
                 }
             });
         self.show_actions = open && !close_clicked;
+    }
+
+    fn set_commands_file_enabled(&mut self, enabled: bool) {
+        if enabled {
+            self.commands_file_enabled = true;
+            self.restart_commands_file_watcher();
+        } else {
+            self.commands_file_enabled = false;
+            self.stop_commands_file_watcher();
+        }
+    }
+
+    fn restart_commands_file_watcher(&mut self) {
+        self.stop_commands_file_watcher();
+        if !self.commands_file_enabled {
+            return;
+        }
+        let path_text = self.commands_file_path.trim();
+        if path_text.is_empty() {
+            eprintln!("Commands file: no path configured");
+            self.commands_file_enabled = false;
+            return;
+        }
+        let poll_interval = Duration::from_millis(self.commands_file_poll_interval_ms.max(50));
+        let cfg = crate::remote::CommandsFileConfig {
+            path: std::path::PathBuf::from(path_text),
+            poll_interval,
+        };
+        let (watcher, rx) = crate::remote::start_commands_file_watcher(cfg);
+        self.commands_file_watcher = Some(watcher);
+        self.commands_file_rx = Some(rx);
+    }
+
+    fn stop_commands_file_watcher(&mut self) {
+        self.commands_file_rx = None;
+        if let Some(watcher) = self.commands_file_watcher.take() {
+            watcher.stop();
+        }
     }
 
     /// Update displayed frame and auto-contrast without touching pending_fit.
@@ -1526,6 +1607,16 @@ impl eframe::App for PumpkinApp {
         while let Ok(cmd) = self.remote_rx.try_recv() {
             self.handle_remote_cmd(cmd);
             ctx.request_repaint();
+        }
+        if let Some(rx) = &mut self.commands_file_rx {
+            let mut commands = Vec::new();
+            while let Ok(cmd) = rx.try_recv() {
+                commands.push(cmd);
+            }
+            for cmd in commands {
+                self.handle_remote_cmd(cmd);
+                ctx.request_repaint();
+            }
         }
 
         // Record activity on any key press, pointer click, or scroll wheel event.

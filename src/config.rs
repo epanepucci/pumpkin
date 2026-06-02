@@ -10,6 +10,9 @@
 /// unfocused_poll_period_ms = 2000   # slower poll rate when window is not focused
 /// monitor_pause_ms         = 2000   # pause live updates for this many ms after zoom/pan
 /// pause_if_idle_after      = 600    # pause monitoring after N seconds idle (0 = never)
+/// commands_file            = "/tmp/pumpkin-command.txt"
+/// commands_file_enabled    = true
+/// commands_file_poll_interval_ms = 500
 ///
 /// [contrast]
 /// colormap = "Inferno"   # Standard | Grayscale | Inferno | Rocket | Heat
@@ -64,6 +67,18 @@ pub struct Config {
     /// Send newline-delimited JSON: {"file": "/path/to/master.h5", "frame": 42}
     #[serde(alias = "remote-port")]
     pub remote_port: Option<u16>,
+    /// Text file containing the same JSON commands accepted by the remote socket.
+    #[serde(alias = "commands-file")]
+    pub commands_file: Option<PathBuf>,
+    /// Enable commands-file monitoring on startup. Defaults to true when
+    /// commands_file is configured.
+    #[serde(alias = "commands-file-enabled")]
+    pub commands_file_enabled: Option<bool>,
+    /// Poll interval used by the commands-file watcher. The watcher also tries
+    /// to install an inotify handle on Linux, but polling remains active because
+    /// NFS/GPFS-backed paths may not reliably emit local inotify events.
+    #[serde(alias = "commands-file-poll-interval-ms")]
+    pub commands_file_poll_interval_ms: Option<u64>,
     pub contrast: ContrastConfig,
     #[serde(alias = "resolution-rings")]
     pub resolution_rings: RingConfig,
@@ -127,10 +142,8 @@ impl Config {
     /// Load a config from an explicit path. Returns an error if the file cannot
     /// be read or parsed.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Cannot read {}: {e}", path.display()))?;
-        toml::from_str(&text)
-            .map_err(|e| anyhow::anyhow!("Parse error in {}: {e}", path.display()))
+        let text = std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("Cannot read {}: {e}", path.display()))?;
+        toml::from_str(&text).map_err(|e| anyhow::anyhow!("Parse error in {}: {e}", path.display()))
     }
 
     /// Try the default location (`$HOME/.config/pumpkin/config.toml`).
@@ -152,7 +165,5 @@ impl Config {
 }
 
 fn default_config_path() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|h| {
-        PathBuf::from(h).join(".config").join("pumpkin").join("config.toml")
-    })
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config").join("pumpkin").join("config.toml"))
 }
