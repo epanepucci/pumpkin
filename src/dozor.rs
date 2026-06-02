@@ -24,6 +24,7 @@ struct RawFile {
 // ─── Public data types ────────────────────────────────────────────────────────
 
 pub struct DozorFrame {
+    pub number: u32,
     pub score: f32,
     pub spots: f32,
     pub resolution: f32,
@@ -49,6 +50,7 @@ impl DozorData {
     fn build(mut raw: Vec<RawFrame>) -> Self {
         raw.sort_by_key(|r| r.number);
         let frames: Vec<DozorFrame> = raw.iter().map(|r| DozorFrame {
+            number: r.number,
             score: r.score as f32,
             spots: r.spots as f32,
             resolution: r.resolution as f32,
@@ -155,30 +157,34 @@ pub fn draw_chart(painter: &egui::Painter, rect: egui::Rect, data: &DozorData, c
     );
     if plot.width() < 4.0 || plot.height() < 4.0 { return; }
 
-    let x_of = |i: usize| {
-        plot.left() + (i as f32 / (n - 1).max(1) as f32) * plot.width()
+    let first_number = data.frames.first().map_or(0.0, |f| f.number as f32);
+    let last_number = data.frames.last().map_or(first_number, |f| f.number as f32);
+    let number_span = (last_number - first_number).max(1.0);
+    let x_of = |number: u32| {
+        let t = (number as f32 - first_number) / number_span;
+        plot.left() + t.clamp(0.0, 1.0) * plot.width()
     };
     let norm = |v: f32, (lo, hi): (f32, f32)| ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
     let y_of = |t: f32| plot.bottom() - t * plot.height();
 
     // Score.
     draw_polyline(painter, (0..n).map(|i| {
-        egui::pos2(x_of(i), y_of(norm(data.frames[i].score, data.score_range)))
+        egui::pos2(x_of(data.frames[i].number), y_of(norm(data.frames[i].score, data.score_range)))
     }), SCORE_COLOR);
 
     // Spots.
     draw_polyline(painter, (0..n).map(|i| {
-        egui::pos2(x_of(i), y_of(norm(data.frames[i].spots, data.spots_range)))
+        egui::pos2(x_of(data.frames[i].number), y_of(norm(data.frames[i].spots, data.spots_range)))
     }), SPOTS_COLOR);
 
     // Resolution — inverted: lower Å = better = higher on chart.
     draw_polyline(painter, (0..n).map(|i| {
-        egui::pos2(x_of(i), y_of(1.0 - norm(data.frames[i].resolution, data.resolution_range)))
+        egui::pos2(x_of(data.frames[i].number), y_of(1.0 - norm(data.frames[i].resolution, data.resolution_range)))
     }), RESOL_COLOR);
 
     // Current-frame vertical marker.
     let ci = current.min(n - 1);
-    let cx = x_of(ci);
+    let cx = x_of(data.frames[ci].number);
     painter.line_segment(
         [egui::pos2(cx, rect.top()), egui::pos2(cx, rect.bottom())],
         egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 130)),

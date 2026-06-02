@@ -1423,36 +1423,44 @@ impl PumpkinApp {
         }
 
         // Dozor quality chart in the bottom quarter.
-        let mut chart_clicked_idx: Option<usize> = None;
+        let mut chart_clicked_number: Option<usize> = None;
         if let (Some(data), Some(cresp)) = (&self.dozor_data, chart_response) {
             let crect = total_rect.with_min_y(available.max.y);
             crate::dozor::draw_chart(ui.painter(), crect, data, self.hdf5_frame_index);
+            let dozor_frame_at = |pos: egui::Pos2| {
+                let first_number = data.frames.first()?.number as f32;
+                let last_number = data.frames.last()?.number as f32;
+                let number_span = (last_number - first_number).max(1.0);
+                let t = ((pos.x - crect.left()) / crect.width()).clamp(0.0, 1.0);
+                let number = first_number + t * number_span;
+                data.frames.iter().min_by(|a, b| {
+                    let da = (a.number as f32 - number).abs();
+                    let db = (b.number as f32 - number).abs();
+                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                })
+            };
 
             // Click to navigate to frame.
             if cresp.clicked() {
                 if let Some(cpos) = cresp.interact_pointer_pos() {
-                    let t   = ((cpos.x - crect.left()) / crect.width()).clamp(0.0, 1.0);
-                    let idx = (t * (data.frames.len().saturating_sub(1)) as f32).round() as usize;
-                    chart_clicked_idx = Some(idx);
+                    chart_clicked_number = dozor_frame_at(cpos).map(|f| f.number as usize);
                 }
             }
 
             // Hover tooltip (consumes cresp, must be last).
             if let Some(hpos) = cresp.hover_pos() {
-                let t   = ((hpos.x - crect.left()) / crect.width()).clamp(0.0, 1.0);
-                let idx = (t * (data.frames.len().saturating_sub(1)) as f32).round() as usize;
-                if let Some(f) = data.frames.get(idx) {
+                if let Some(f) = dozor_frame_at(hpos) {
                     cresp.on_hover_text(format!(
                         "Frame {}\nScore: {:.1}\nSpots: {}\nRes: {:.3} Å",
-                        idx + 1, f.score, f.spots as u32, f.resolution
+                        f.number, f.score, f.spots as u32, f.resolution
                     ));
                 }
             }
         }
         // Apply chart navigation outside the dozor_data borrow.
-        if let Some(idx) = chart_clicked_idx {
-            self.hdf5_frame_index = idx;
-            self.load_hdf5_grouped(idx);
+        if let Some(number) = chart_clicked_number {
+            self.hdf5_frame_index = number;
+            self.load_hdf5_grouped(number);
         }
     }
 }
