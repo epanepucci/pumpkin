@@ -951,11 +951,9 @@ impl PumpkinApp {
                     row!("Image #", n.to_string());
                 }
                 if let Some(ref p) = meta.name_pattern {
-                    let name = std::path::Path::new(p)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(p.as_str());
-                    row!("Name", name.to_string());
+                    if let Some(name) = display_name(p) {
+                        row!("Name", name.to_string());
+                    }
                 }
             });
         } else {
@@ -1377,6 +1375,7 @@ impl PumpkinApp {
 
         // Draw overlays.
         viewport::draw_overlays(&painter, &self.view, available, frame, &self.overlays);
+        self.draw_series_name_overlay(ui, available, frame);
 
         // Pixel coordinate + value tooltip at cursor.
         if let Some(hover) = response.hover_pos() {
@@ -1462,6 +1461,43 @@ impl PumpkinApp {
             self.hdf5_frame_index = number;
             self.load_hdf5_grouped(number);
         }
+    }
+
+    fn draw_series_name_overlay(&self, ui: &Ui, viewport: egui::Rect, frame: &Frame) {
+        let Some(label) = frame.metadata.name_pattern.as_deref().and_then(display_name) else {
+            return;
+        };
+
+        let max_text_width = (viewport.width() - 44.0).max(0.0);
+        let max_chars = (max_text_width / 7.0).floor().max(8.0) as usize;
+        let label = elide_middle(label, max_chars);
+
+        let font_id = egui::FontId::proportional(13.0);
+        let galley = ui.painter().layout_no_wrap(
+            label,
+            font_id,
+            egui::Color32::WHITE,
+        );
+        let padding = egui::vec2(10.0, 5.0);
+        let rect_size = egui::vec2(
+            galley.size().x + padding.x * 2.0,
+            galley.size().y + padding.y * 2.0,
+        );
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(viewport.center().x - rect_size.x * 0.5, viewport.top() + 8.0),
+            rect_size,
+        );
+        let painter = ui.painter().with_clip_rect(viewport);
+        painter.rect_filled(
+            rect,
+            4.0,
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 170),
+        );
+        let text_pos = egui::pos2(
+            rect.center().x - galley.size().x.min(rect.width() - padding.x * 2.0) * 0.5,
+            rect.center().y - galley.size().y * 0.5,
+        );
+        painter.galley(text_pos, galley, egui::Color32::WHITE);
     }
 }
 
@@ -1751,6 +1787,34 @@ fn auto_contrast_region(frame: &Frame, view: &ViewState, viewport: egui::Rect) -
     let max_val = *vals.last().unwrap() as f32;
     let vmax = (max_val * 0.010).max(5.0);
     (vmin as f32, vmax)
+}
+
+fn display_name(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    Some(
+        std::path::Path::new(value)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(value),
+    )
+}
+
+fn elide_middle(value: &str, max_chars: usize) -> String {
+    let len = value.chars().count();
+    if len <= max_chars {
+        return value.to_owned();
+    }
+
+    let keep = max_chars.saturating_sub(3);
+    let front = keep / 2;
+    let back = keep - front;
+    let prefix: String = value.chars().take(front).collect();
+    let suffix: String = value.chars().skip(len - back).collect();
+    format!("{prefix}...{suffix}")
 }
 
 /// Compute vmin as the 1st percentile and vmax as 10% of the maximum

@@ -46,6 +46,7 @@ impl Hdf5Series {
             pixel_size_x,
             pixel_size_y,
             exposure_time,
+            name_pattern: Some(master_path.to_string_lossy().into_owned()),
             ..Default::default()
         };
 
