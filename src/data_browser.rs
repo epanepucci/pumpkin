@@ -417,7 +417,7 @@ impl DatasetNode {
 fn tree_row(ui: &mut egui::Ui, open: bool, label: &str) -> bool {
     let icon = if open { "▼" } else { "▶" };
     let response = ui.selectable_label(false, format!("{icon} {label}"));
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, label));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     response.clicked()
 }
 
@@ -443,7 +443,7 @@ impl ProteinNode {
                     Async::Loading(_) => loading_row(ui),
                     Async::Failed(e) => {
                         let resp = ui.label(egui::RichText::new(format!("⚠ {e}")).small());
-                        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, format!("Error: {e}")));
+                        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("Error: {e}")));
                     }
                     Async::Done(datasets) => {
                         if datasets.nodes.is_empty() {
@@ -482,7 +482,7 @@ impl VisitNode {
                     Async::Loading(_) => loading_row(ui),
                     Async::Failed(e) => {
                         let resp = ui.label(egui::RichText::new(format!("⚠ {e}")).small());
-                        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, format!("Error: {e}")));
+                        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("Error: {e}")));
                     }
                     Async::Done(proteins) => {
                         if proteins.is_empty() {
@@ -519,7 +519,7 @@ impl ProposalNode {
                     Async::Loading(_) => loading_row(ui),
                     Async::Failed(e) => {
                         let resp = ui.label(egui::RichText::new(format!("⚠ {e}")).small());
-                        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, format!("Error: {e}")));
+                        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("Error: {e}")));
                     }
                     Async::Done(visits) => {
                         if visits.is_empty() {

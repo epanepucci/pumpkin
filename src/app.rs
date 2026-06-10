@@ -897,7 +897,7 @@ impl PumpkinApp {
             egui::vec2(ui.available_width(), height),
             egui::Sense::click(),
         );
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, title));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
 
         if ui.is_rect_visible(rect) {
             let fill = if is_open {
@@ -911,7 +911,7 @@ impl PumpkinApp {
 
             // Draw focus indicator
             if response.has_focus() {
-                ui.painter().rect_stroke(rect, 0.0, ui.visuals().selection.stroke);
+                ui.painter().rect_stroke(rect, 0.0, ui.visuals().selection.stroke, egui::StrokeKind::Inside);
             }
 
             ui.painter().text(
@@ -1278,13 +1278,13 @@ impl PumpkinApp {
 
         self.last_viewport_rect = available;
         let response = ui.allocate_rect(available, egui::Sense::click_and_drag());
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, "Detector image viewport"));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, "Detector image viewport"));
 
         // Allocate the chart area now so egui accounts for it in the layout.
         let chart_response = if chart_visible {
             let crect = total_rect.with_min_y(available.max.y);
             let resp = ui.allocate_rect(crect, egui::Sense::click());
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, "Dozor quality chart"));
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "Dozor quality chart"));
             Some(resp)
         } else {
             None
