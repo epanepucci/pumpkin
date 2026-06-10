@@ -897,6 +897,8 @@ impl PumpkinApp {
             egui::vec2(ui.available_width(), height),
             egui::Sense::click(),
         );
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, title));
+
         if ui.is_rect_visible(rect) {
             let fill = if is_open {
                 open_bg
@@ -906,12 +908,18 @@ impl PumpkinApp {
                 closed_bg
             };
             ui.painter().rect_filled(rect, 0.0, fill);
+
+            // Draw focus indicator
+            if response.has_focus() {
+                ui.painter().rect_stroke(rect, 0.0, ui.visuals().selection.stroke);
+            }
+
             ui.painter().text(
                 rect.left_center() + egui::vec2(10.0, 0.0),
                 egui::Align2::LEFT_CENTER,
                 title,
                 egui::FontId::proportional(13.0),
-                egui::Color32::from_gray(220),
+                egui::Color32::WHITE,
             );
         }
         response.clicked()
@@ -989,16 +997,17 @@ impl PumpkinApp {
             }
 
             ui.horizontal(|ui| {
-                if ui.button("◀").clicked() && self.hdf5_frame_index >= grouping {
+                let btn_size = egui::vec2(24.0, 24.0);
+                if ui.add(egui::Button::new("◀").min_size(btn_size)).on_hover_text("Previous frame").clicked() && self.hdf5_frame_index >= grouping {
                     self.hdf5_frame_index -= grouping;
                 }
-                if ui.button("▶").clicked() && self.hdf5_frame_index + grouping < total {
+                if ui.add(egui::Button::new("▶").min_size(btn_size)).on_hover_text("Next frame").clicked() && self.hdf5_frame_index + grouping < total {
                     self.hdf5_frame_index += grouping;
                 }
-                if ui.button("|◀").clicked() {
+                if ui.add(egui::Button::new("|◀").min_size(btn_size)).on_hover_text("First frame").clicked() {
                     self.hdf5_frame_index = 0;
                 }
-                if ui.button("▶|").clicked() {
+                if ui.add(egui::Button::new("▶|").min_size(btn_size)).on_hover_text("Last frame").clicked() {
                     self.hdf5_frame_index = (n_groups - 1) * grouping;
                 }
             });
@@ -1032,10 +1041,16 @@ impl PumpkinApp {
             ui.horizontal(|ui| {
                 let can_prev = cur_pos.map_or(false, |p| p > 0);
                 let can_next = cur_pos.map_or(false, |p| p + 1 < self.monitor_image_ids.len());
-                if ui.add_enabled(can_prev, egui::Button::new(egui::RichText::new("◀").size(36.0)).min_size(egui::vec2(80.0, 60.0)).corner_radius(10)).clicked() {
+                if ui.add_enabled(can_prev, egui::Button::new(egui::RichText::new("◀").size(36.0)).min_size(egui::vec2(80.0, 60.0)).corner_radius(10))
+                    .on_hover_text("Previous frame")
+                    .clicked()
+                {
                     self.monitor_selected_id = Some(self.monitor_image_ids[cur_pos.unwrap() - 1]);
                 }
-                if ui.add_enabled(can_next, egui::Button::new(egui::RichText::new("▶").size(36.0)).min_size(egui::vec2(80.0, 60.0)).corner_radius(10)).clicked() {
+                if ui.add_enabled(can_next, egui::Button::new(egui::RichText::new("▶").size(36.0)).min_size(egui::vec2(80.0, 60.0)).corner_radius(10))
+                    .on_hover_text("Next frame")
+                    .clicked()
+                {
                     self.monitor_selected_id = Some(self.monitor_image_ids[cur_pos.unwrap() + 1]);
                 }
             });
@@ -1263,11 +1278,14 @@ impl PumpkinApp {
 
         self.last_viewport_rect = available;
         let response = ui.allocate_rect(available, egui::Sense::click_and_drag());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, "Detector image viewport"));
 
         // Allocate the chart area now so egui accounts for it in the layout.
         let chart_response = if chart_visible {
             let crect = total_rect.with_min_y(available.max.y);
-            Some(ui.allocate_rect(crect, egui::Sense::click()))
+            let resp = ui.allocate_rect(crect, egui::Sense::click());
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, "Dozor quality chart"));
+            Some(resp)
         } else {
             None
         };

@@ -382,7 +382,7 @@ fn filter_bar(ui: &mut egui::Ui, value: &mut String, hint: &str) {
                 .hint_text(hint)
                 .font(egui::TextStyle::Small),
         );
-        if !value.is_empty() && ui.small_button("✕").clicked() {
+        if !value.is_empty() && ui.button("✕").on_hover_text("Clear filter").clicked() {
             value.clear();
         }
     });
@@ -416,7 +416,9 @@ impl DatasetNode {
 
 fn tree_row(ui: &mut egui::Ui, open: bool, label: &str) -> bool {
     let icon = if open { "▼" } else { "▶" };
-    ui.selectable_label(false, format!("{icon} {label}")).clicked()
+    let response = ui.selectable_label(false, format!("{icon} {label}"));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, label));
+    response.clicked()
 }
 
 fn loading_row(ui: &mut egui::Ui) {
@@ -439,7 +441,10 @@ impl ProteinNode {
                 match &mut self.datasets {
                     Async::Idle    => {}
                     Async::Loading(_) => loading_row(ui),
-                    Async::Failed(e) => { ui.label(egui::RichText::new(format!("⚠ {e}")).small()); }
+                    Async::Failed(e) => {
+                        let resp = ui.label(egui::RichText::new(format!("⚠ {e}")).small());
+                        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, format!("Error: {e}")));
+                    }
                     Async::Done(datasets) => {
                         if datasets.nodes.is_empty() {
                             ui.label(egui::RichText::new("No datasets found").small().weak());
@@ -475,7 +480,10 @@ impl VisitNode {
                 match &mut self.proteins {
                     Async::Idle    => {}
                     Async::Loading(_) => loading_row(ui),
-                    Async::Failed(e) => { ui.label(egui::RichText::new(format!("⚠ {e}")).small()); }
+                    Async::Failed(e) => {
+                        let resp = ui.label(egui::RichText::new(format!("⚠ {e}")).small());
+                        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, format!("Error: {e}")));
+                    }
                     Async::Done(proteins) => {
                         if proteins.is_empty() {
                             ui.label(egui::RichText::new("No proteins found").small().weak());
@@ -509,7 +517,10 @@ impl ProposalNode {
                 match &mut self.visits {
                     Async::Idle    => {}
                     Async::Loading(_) => loading_row(ui),
-                    Async::Failed(e) => { ui.label(egui::RichText::new(format!("⚠ {e}")).small()); }
+                    Async::Failed(e) => {
+                        let resp = ui.label(egui::RichText::new(format!("⚠ {e}")).small());
+                        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, format!("Error: {e}")));
+                    }
                     Async::Done(visits) => {
                         if visits.is_empty() {
                             ui.label(egui::RichText::new("No visits found").small().weak());
