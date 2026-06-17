@@ -2,7 +2,9 @@
 
 A desktop application for viewing X-ray diffraction images from DECTRIS EIGER detectors, built with Rust and egui.
 
-![Pumpkin Main Window](docs/pumpkin-mainwindow.png "Pumpkin Diffraction Viewer")
+<img src="docs/pumpkin-mainwindow.png" alt="Pumpkin Diffraction Viewer" width="400">
+<img src="docs/pumpkin-databrowser-dozor.png" alt="Pumpkin databrowser and dozor plots" width="400">
+<img src="docs/pumpkin-databrowser-detail.png" alt="Pumpkin databrowser detail">
 
 ## Features
 
