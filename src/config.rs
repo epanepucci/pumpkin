@@ -87,6 +87,8 @@ pub struct Config {
     /// Explicit ring definitions. When present, supersedes the built-in defaults.
     /// Each entry requires `resolution` (d-spacing in Å) and optionally `label`.
     pub rings: Option<Vec<RingEntry>>,
+    #[serde(alias = "data-browser")]
+    pub data_browser: DataBrowserConfig,
 }
 
 /// One explicit resolution ring from the config file.
@@ -136,6 +138,141 @@ pub struct BeamCenterConfig {
     pub color: Option<[u8; 4]>,
     #[serde(alias = "thickness")]
     pub stroke_width: Option<f32>,
+}
+
+/// Which OS groups qualify as proposal IDs and where proposals live on disk.
+#[derive(serde::Deserialize, Clone)]
+#[serde(default)]
+pub struct ProposalSource {
+    /// Root directory containing one subdirectory per proposal.
+    pub base_path: String,
+    /// Suffix that OS group names must end with; the part before it becomes the proposal ID.
+    /// Example: "-group" matches "20240001-group" → proposal "20240001".
+    pub group_suffix: String,
+    /// Required number of ASCII digits for the proposal ID portion (0 = no constraint).
+    pub proposal_id_digits: usize,
+}
+
+impl Default for ProposalSource {
+    fn default() -> Self {
+        Self {
+            base_path: "/data/visitors/biomax".to_string(),
+            group_suffix: "-group".to_string(),
+            proposal_id_digits: 8,
+        }
+    }
+}
+
+/// One directory level in the browseable hierarchy between proposals and datasets.
+#[derive(serde::Deserialize, Clone)]
+#[serde(default)]
+pub struct LevelConfig {
+    /// Display label used in filter bar hint text, e.g. "dates" → "Filter dates…".
+    pub label: String,
+    /// Fixed subdirectory to descend into before listing entries for this level.
+    /// Empty string means list the parent directory directly.
+    /// Example: "raw" → list `{parent}/raw/`.
+    pub subdir: String,
+    /// If true, only entries whose names consist entirely of ASCII digits
+    /// and are exactly `date_dir_len` characters long are shown.
+    pub date_only: bool,
+    /// Required character length when `date_only` is true.
+    pub date_dir_len: usize,
+    /// Sort entries newest-first (reverse lexicographic order).
+    pub sort_desc: bool,
+}
+
+impl Default for LevelConfig {
+    fn default() -> Self {
+        Self {
+            label: "items".to_string(),
+            subdir: String::new(),
+            date_only: false,
+            date_dir_len: 8,
+            sort_desc: false,
+        }
+    }
+}
+
+/// Controls how dataset files are located at the leaf of the hierarchy.
+#[derive(serde::Deserialize, Clone)]
+#[serde(default)]
+pub struct DatasetConfig {
+    /// Fixed subdirectory under the leaf node to search in. Empty = search from leaf dir.
+    pub subdir: String,
+    /// Filename suffix that identifies dataset master files.
+    pub file_suffix: String,
+    /// Maximum recursive subdirectory depth for the dataset search.
+    pub search_depth: usize,
+}
+
+impl Default for DatasetConfig {
+    fn default() -> Self {
+        Self {
+            subdir: String::new(),
+            file_suffix: "_master.h5".to_string(),
+            search_depth: 2,
+        }
+    }
+}
+
+/// Configuration for the data browser panel.
+///
+/// ```toml
+/// [data_browser]
+/// [data_browser.proposal_source]
+/// base_path            = "/data/visitors/biomax"
+/// group_suffix         = "-group"
+/// proposal_id_digits   = 8
+///
+/// [[data_browser.levels]]
+/// label      = "dates"
+/// date_only  = true
+/// sort_desc  = true
+///
+/// [[data_browser.levels]]
+/// label  = "samples"
+/// subdir = "raw"
+///
+/// [data_browser.datasets]
+/// file_suffix   = "_master.h5"
+/// search_depth  = 2
+/// ```
+#[derive(serde::Deserialize, Clone)]
+#[serde(default)]
+pub struct DataBrowserConfig {
+    pub proposal_source: ProposalSource,
+    /// Ordered directory levels between the proposal root and the dataset files.
+    /// Empty means datasets live directly under each proposal directory.
+    pub levels: Vec<LevelConfig>,
+    pub datasets: DatasetConfig,
+}
+
+impl Default for DataBrowserConfig {
+    fn default() -> Self {
+        Self {
+            proposal_source: ProposalSource::default(),
+            levels: vec![
+                // Level 0: visit dates — 8-digit dirs directly under the proposal.
+                LevelConfig {
+                    label: "dates".to_string(),
+                    subdir: String::new(),
+                    date_only: true,
+                    date_dir_len: 8,
+                    sort_desc: true,
+                },
+                // Level 1: samples — all subdirs of raw/.
+                LevelConfig {
+                    label: "samples".to_string(),
+                    subdir: "raw".to_string(),
+                    date_only: false,
+                    date_dir_len: 8,
+                    sort_desc: false,
+                },
+            ],
+            datasets: DatasetConfig::default(),
+        }
+    }
 }
 
 impl Config {

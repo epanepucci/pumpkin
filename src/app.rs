@@ -204,6 +204,7 @@ impl PumpkinApp {
         commands_file: Option<std::path::PathBuf>,
         commands_file_enabled: bool,
         commands_file_poll_interval_ms: u64,
+        data_browser_cfg: crate::config::DataBrowserConfig,
     ) -> Self {
         let (on_demand_tx, on_demand_rx) = std::sync::mpsc::sync_channel(4);
         let mut app = Self {
@@ -261,7 +262,7 @@ impl PumpkinApp {
             last_location: Self::load_last_location(),
             file_dialog: FileDialog::new()
                 .add_file_filter_extensions("HDF5 master", vec!["h5"]),
-            data_browser: crate::data_browser::DataBrowser::new(),
+            data_browser: crate::data_browser::DataBrowser::new(data_browser_cfg),
             dozor_data: None,
             dozor_collapsed: false,
             remote_rx,

@@ -10,6 +10,7 @@ A desktop application for viewing X-ray diffraction images from DECTRIS EIGER de
 
 - **Live monitoring** — polls a DECTRIS DCU (Data Collection Unit) via the SIMPLON API and displays frames as they arrive
 - **File browser** — open HDF5 (NXmx master files) and TIFF images from disk; scrub through frames in a series
+- **Data browser** — hierarchical beamline archive browser with configurable folder layouts; discovers proposals via OS group membership
 - **Viewport** — zoom/pan with mouse, fit-to-view, export the current frame as PNG
 - **Contrast controls** — auto and manual min/max, gamma correction, multiple colormaps (Inferno, Standard, Grayscale, Rocket, Heat), log-scale histogram
 - **Overlays** — configurable resolution rings (d-spacing in Å) and beam-center crosshair drawn on the image
@@ -101,6 +102,85 @@ label = "ice 3.9"
 
 [[rings]]
 resolution = 3.669
+```
+
+## Data Browser
+
+The side panel includes a hierarchical file browser for navigating beamline proposal archives. It discovers proposals by running `id -nG` and matching OS group names, then lazily loads the directory tree as the user expands nodes.
+
+The browser layout is fully configurable via `[data_browser]` in `config.toml`. If the section is omitted, it defaults to the BioMAX layout at MAX IV.
+
+### How it works
+
+Each proposal maps to a directory under `base_path`. Below proposals, the browser traverses the levels you define — each level lists subdirectories of its parent, optionally descending into a fixed intermediate subdirectory first (`subdir`). At the leaf of the last level, it searches for dataset master files matching `file_suffix`.
+
+### Configuration
+
+```toml
+[data_browser.proposal_source]
+base_path          = "/data/visitors/biomax"
+# OS group suffix used to identify proposals: "20240001-group" → proposal "20240001"
+group_suffix       = "-group"
+# Required digit count for the proposal ID (0 = no constraint)
+proposal_id_digits = 8
+
+# One [[data_browser.levels]] block per directory level between proposals and datasets.
+# Omit all levels to browse datasets directly under each proposal directory.
+
+[[data_browser.levels]]
+label        = "dates"    # shown in the filter bar hint
+date_only    = true       # hide directories whose names are not YYYYMMDD
+date_dir_len = 8
+sort_desc    = true       # show most recent dates first
+
+[[data_browser.levels]]
+label  = "samples"
+subdir = "raw"            # descend into visit/raw/ before listing sample directories
+
+[data_browser.datasets]
+file_suffix  = "_master.h5"   # filename suffix that identifies dataset master files
+search_depth = 2              # how many subdirectory levels to search for master files
+```
+
+The example above produces this layout:
+```
+/data/visitors/biomax/
+└── 20240001/           ← proposal (from OS group "20240001-group")
+    └── 20240315/       ← date level (date_only = true)
+        └── raw/        ← fixed subdir from levels[1].subdir
+            └── lyso/   ← sample level
+                └── lyso_1_master.h5
+```
+
+### Examples
+
+**Flat layout — proposal → sample → files (no date level):**
+```toml
+[data_browser.proposal_source]
+base_path          = "/data/xrd"
+group_suffix       = "-xrd"
+proposal_id_digits = 6
+
+[[data_browser.levels]]
+label = "samples"
+
+[data_browser.datasets]
+file_suffix  = "_master.h5"
+search_depth = 1
+```
+
+**Datasets directly under proposals (no intermediate levels):**
+```toml
+[data_browser.proposal_source]
+base_path          = "/mnt/detector/runs"
+group_suffix       = "-users"
+proposal_id_digits = 0   # accept any non-empty prefix
+
+# No [[data_browser.levels]] entries
+
+[data_browser.datasets]
+file_suffix  = "_master.h5"
+search_depth = 3
 ```
 
 ## Remote Control

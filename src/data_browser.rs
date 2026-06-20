@@ -3,13 +3,14 @@ use std::sync::mpsc;
 
 use hdf5_metno as hdf5;
 
-const BASE_PATH: &str = "/data/visitors/biomax";
+use crate::config::{DataBrowserConfig, DatasetConfig, LevelConfig, ProposalSource};
 
 // ─── Proposal cache ───────────────────────────────────────────────────────────
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ProposalCache {
     timestamp_secs: u64,
+    base_path: String,
     proposals: Vec<String>,
 }
 
@@ -28,12 +29,16 @@ fn load_proposal_cache() -> Option<ProposalCache> {
     serde_json::from_str(&text).ok()
 }
 
-fn save_proposal_cache(proposals: &[String]) {
+fn save_proposal_cache(proposals: &[String], base_path: &str) {
     let Some(path) = cache_path() else { return };
     if let Some(p) = path.parent() {
         let _ = std::fs::create_dir_all(p);
     }
-    let cache = ProposalCache { timestamp_secs: unix_now(), proposals: proposals.to_vec() };
+    let cache = ProposalCache {
+        timestamp_secs: unix_now(),
+        base_path: base_path.to_string(),
+        proposals: proposals.to_vec(),
+    };
     if let Ok(json) = serde_json::to_string(&cache) {
         let _ = std::fs::write(path, json);
     }
@@ -50,17 +55,22 @@ fn cache_is_fresh(cache: &ProposalCache) -> bool {
     unix_now().saturating_sub(cache.timestamp_secs) < 86_400
 }
 
-/// Blocking: runs `id -nG`, extracts groups matching `\d{8}-group`.
-fn fetch_proposals_from_os() -> Vec<String> {
+/// Blocking: runs `id -nG`, extracts proposal IDs from matching group names.
+fn fetch_proposals_from_os(source: &ProposalSource) -> Vec<String> {
     let Ok(out) = std::process::Command::new("id").arg("-nG").output() else {
         return vec![];
     };
     String::from_utf8_lossy(&out.stdout)
         .split_whitespace()
         .filter_map(|g| {
-            let prefix = g.strip_suffix("-group")?;
-            (prefix.len() == 8 && prefix.bytes().all(|b| b.is_ascii_digit()))
+            let prefix = g.strip_suffix(&source.group_suffix)?;
+            if source.proposal_id_digits > 0 {
+                (prefix.len() == source.proposal_id_digits
+                    && prefix.bytes().all(|b| b.is_ascii_digit()))
                 .then(|| prefix.to_string())
+            } else {
+                (!prefix.is_empty()).then(|| prefix.to_string())
+            }
         })
         .collect()
 }
@@ -75,7 +85,6 @@ enum Async<T> {
 }
 
 impl<T> Async<T> {
-    /// Check the receiver for a result. Returns true if the state changed.
     fn poll(&mut self) -> bool {
         let prev = std::mem::replace(self, Async::Idle);
         match prev {
@@ -109,10 +118,6 @@ where
 
 // ─── Filesystem helpers ───────────────────────────────────────────────────────
 
-fn is_date_dir(name: &str) -> bool {
-    name.len() == 8 && name.bytes().all(|b| b.is_ascii_digit())
-}
-
 fn list_subdirs(path: &Path) -> Result<Vec<PathBuf>, String> {
     let entries = std::fs::read_dir(path)
         .map_err(|e| format!("Cannot list {}: {e}", path.display()))?;
@@ -125,20 +130,20 @@ fn list_subdirs(path: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(dirs)
 }
 
-/// Recursively collect `*_master.h5` files up to `depth` subdirectory levels.
-fn find_master_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+/// Recursively collect files whose names end with `suffix` up to `depth` levels.
+fn find_master_files(dir: &Path, depth: usize, suffix: &str, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
         let Ok(ft) = entry.file_type() else { continue };
         if ft.is_file() {
             if path.file_name().and_then(|n| n.to_str())
-                .is_some_and(|n| n.ends_with("_master.h5"))
+                .is_some_and(|n| n.ends_with(suffix))
             {
                 out.push(path);
             }
         } else if ft.is_dir() && depth > 0 {
-            find_master_files(&path, depth - 1, out);
+            find_master_files(&path, depth - 1, suffix, out);
         }
     }
 }
@@ -147,29 +152,29 @@ fn find_master_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
 
 #[derive(Clone, Default)]
 pub struct DatasetMeta {
-    pub ntrigger: Option<u32>,
-    pub nimages:  Option<u32>,
-    pub total:    Option<u32>,
+    pub ntrigger: Option<u64>,
+    pub nimages:  Option<u64>,
+    pub total:    Option<u64>,
     pub exp_ms:   Option<f64>,
 }
 
 fn read_meta(path: &Path) -> DatasetMeta {
     let Ok(f) = hdf5::File::open(path) else { return DatasetMeta::default() };
 
-    let ntrigger = rd_u32(&f, "/entry/instrument/detector/detectorSpecific/ntrigger");
-    let nimages  = rd_u32(&f, "/entry/instrument/detector/detectorSpecific/nimages");
+    let ntrigger = rd_u64(&f, "/entry/instrument/detector/detectorSpecific/ntrigger");
+    let nimages  = rd_u64(&f, "/entry/instrument/detector/detectorSpecific/nimages");
     let count_t  = rd_f64(&f, "/entry/instrument/detector/count_time");
     let total    = ntrigger.zip(nimages).map(|(t, n)| t * n).or(nimages);
 
     DatasetMeta { ntrigger, nimages, total, exp_ms: count_t.map(|t| t * 1e3) }
 }
 
-fn rd_u32(f: &hdf5::File, path: &str) -> Option<u32> {
+fn rd_u64(f: &hdf5::File, path: &str) -> Option<u64> {
     let ds = f.dataset(path).ok()?;
-    if let Ok(v) = ds.read_scalar::<u32>() { return Some(v); }
-    if let Ok(v) = ds.read_scalar::<i32>() { return Some(v.max(0) as u32); }
-    if let Ok(v) = ds.read_scalar::<i64>() { return Some(v.max(0) as u32); }
-    if let Ok(v) = ds.read_scalar::<u64>() { return Some(v.min(u32::MAX as u64) as u32); }
+    if let Ok(v) = ds.read_scalar::<u64>() { return Some(v); }
+    if let Ok(v) = ds.read_scalar::<u32>() { return Some(v as u64); }
+    if let Ok(v) = ds.read_scalar::<i64>() { return Some(v.max(0) as u64); }
+    if let Ok(v) = ds.read_scalar::<i32>() { return Some(v.max(0) as u64); }
     None
 }
 
@@ -180,80 +185,58 @@ fn rd_f64(f: &hdf5::File, path: &str) -> Option<f64> {
     None
 }
 
-// ─── Tree nodes ───────────────────────────────────────────────────────────────
-
-struct DatasetNode {
-    name: String,
-    path: PathBuf,
-    meta: Option<DatasetMeta>,
-}
-
-struct ProteinNode {
-    name: String,
-    raw_path: PathBuf,
-    open: bool,
-    datasets: Async<DatasetList>,
-}
-
-struct DatasetList {
-    nodes: Vec<DatasetNode>,
-    meta_rx: Option<mpsc::Receiver<(PathBuf, DatasetMeta)>>,
-    pending_meta: usize,
-}
-
-struct VisitNode {
-    date: String,
-    visit_path: PathBuf,
-    open: bool,
-    proteins: Async<Vec<ProteinNode>>,
-    file_filter: String,
-}
-
-struct ProposalNode {
-    number: String,
-    open: bool,
-    visits: Async<Vec<VisitNode>>,
-    visit_filter: String,
-}
-
 // ─── Background loaders ───────────────────────────────────────────────────────
 
-fn bg_load_visits(proposal: String) -> Result<Vec<VisitNode>, String> {
-    let root = PathBuf::from(BASE_PATH).join(&proposal);
-    let entries = std::fs::read_dir(&root)
-        .map_err(|e| format!("Cannot list {}: {e}", root.display()))?;
-    let mut visits: Vec<VisitNode> = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            is_date_dir(&name).then(|| VisitNode {
-                date: name,
-                visit_path: e.path(),
+/// Load one level of directory nodes under `parent_path`, applying `level_cfg`.
+fn bg_load_level(parent_path: PathBuf, level_cfg: LevelConfig) -> Result<Vec<TreeNode>, String> {
+    let search_root = if level_cfg.subdir.is_empty() {
+        parent_path.clone()
+    } else {
+        parent_path.join(&level_cfg.subdir)
+    };
+
+    let dirs = list_subdirs(&search_root)?;
+
+    let mut nodes: Vec<TreeNode> = dirs
+        .into_iter()
+        .filter(|p| {
+            if !level_cfg.date_only {
+                return true;
+            }
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.len() == level_cfg.date_dir_len && n.bytes().all(|b| b.is_ascii_digit()))
+                .unwrap_or(false)
+        })
+        .map(|p| {
+            let name = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            TreeNode {
+                name,
+                path: p,
                 open: false,
-                proteins: Async::Idle,
-                file_filter: String::new(),
-            })
+                child_filter: String::new(),
+                children: NodeChildren::Levels(Async::Idle),
+            }
         })
         .collect();
-    visits.sort_by(|a, b| b.date.cmp(&a.date)); // most recent first
-    Ok(visits)
+
+    if level_cfg.sort_desc {
+        nodes.sort_by(|a, b| b.name.cmp(&a.name));
+    }
+    // dirs are already sorted ascending from list_subdirs; only sort again for desc.
+
+    Ok(nodes)
 }
 
-fn bg_load_proteins(visit_path: PathBuf) -> Result<Vec<ProteinNode>, String> {
-    let raw = visit_path.join("raw");
-    let dirs = list_subdirs(&raw)
-        .map_err(|e| format!("raw/: {e}"))?;
-    let proteins = dirs.into_iter().map(|p| {
-        let name = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        ProteinNode { name, raw_path: p, open: false, datasets: Async::Idle }
-    }).collect();
-    Ok(proteins)
-}
+fn bg_load_datasets(leaf_path: PathBuf, cfg: DatasetConfig) -> Result<DatasetList, String> {
+    let search_root = if cfg.subdir.is_empty() {
+        leaf_path.clone()
+    } else {
+        leaf_path.join(&cfg.subdir)
+    };
 
-fn bg_load_datasets(protein_path: PathBuf) -> Result<DatasetList, String> {
     let mut masters = Vec::new();
-    find_master_files(&protein_path, 2, &mut masters);
+    find_master_files(&search_root, cfg.search_depth, &cfg.file_suffix, &mut masters);
     masters.sort();
 
     let (tx, rx) = mpsc::channel();
@@ -268,14 +251,16 @@ fn bg_load_datasets(protein_path: PathBuf) -> Result<DatasetList, String> {
     });
 
     let pending_meta = masters.len();
+    let suffix = cfg.file_suffix.clone();
     let nodes = masters.into_iter().map(|path| {
         let name = path.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("")
-            .trim_end_matches("_master.h5")
+            .trim_end_matches(suffix.as_str())
             .to_string();
         DatasetNode { name, path, meta: None }
     }).collect();
+
     Ok(DatasetList {
         nodes,
         meta_rx: (pending_meta > 0).then_some(rx),
@@ -283,48 +268,18 @@ fn bg_load_datasets(protein_path: PathBuf) -> Result<DatasetList, String> {
     })
 }
 
-// ─── Poll ─────────────────────────────────────────────────────────────────────
+// ─── Tree nodes ───────────────────────────────────────────────────────────────
 
-impl ProposalNode {
-    fn poll(&mut self) -> bool {
-        let mut changed = self.visits.poll();
-        if let Async::Done(visits) = &mut self.visits {
-            for v in visits.iter_mut() { changed |= v.poll(); }
-        }
-        changed
-    }
-    fn is_loading(&self) -> bool {
-        self.visits.is_loading()
-            || matches!(&self.visits, Async::Done(vs) if vs.iter().any(|v| v.is_loading()))
-    }
+struct DatasetNode {
+    name: String,
+    path: PathBuf,
+    meta: Option<DatasetMeta>,
 }
 
-impl VisitNode {
-    fn poll(&mut self) -> bool {
-        let mut changed = self.proteins.poll();
-        if let Async::Done(proteins) = &mut self.proteins {
-            for p in proteins.iter_mut() { changed |= p.poll(); }
-        }
-        changed
-    }
-    fn is_loading(&self) -> bool {
-        self.proteins.is_loading()
-            || matches!(&self.proteins, Async::Done(ps) if ps.iter().any(|p| p.is_loading()))
-    }
-}
-
-impl ProteinNode {
-    fn poll(&mut self) -> bool {
-        let mut changed = self.datasets.poll();
-        if let Async::Done(datasets) = &mut self.datasets {
-            changed |= datasets.poll_meta();
-        }
-        changed
-    }
-    fn is_loading(&self) -> bool {
-        self.datasets.is_loading()
-            || matches!(&self.datasets, Async::Done(datasets) if datasets.is_loading())
-    }
+struct DatasetList {
+    nodes: Vec<DatasetNode>,
+    meta_rx: Option<mpsc::Receiver<(PathBuf, DatasetMeta)>>,
+    pending_meta: usize,
 }
 
 impl DatasetList {
@@ -360,7 +315,260 @@ impl DatasetList {
     }
 }
 
-// ─── UI rendering ─────────────────────────────────────────────────────────────
+enum NodeChildren {
+    /// More directory levels remain below this node.
+    Levels(Async<Vec<TreeNode>>),
+    /// This is the leaf level; children are dataset files.
+    Datasets(Async<DatasetList>),
+}
+
+struct TreeNode {
+    name: String,
+    path: PathBuf,
+    open: bool,
+    child_filter: String,
+    children: NodeChildren,
+}
+
+impl TreeNode {
+    /// Called when the node is first opened. `depth` is this node's position in
+    /// `cfg.levels` (0 = first level below proposals). Children are at `depth + 1`.
+    fn trigger_load(&mut self, depth: usize, cfg: &DataBrowserConfig) {
+        let is_idle = match &self.children {
+            NodeChildren::Levels(a) => a.is_idle(),
+            NodeChildren::Datasets(a) => a.is_idle(),
+        };
+        if !is_idle {
+            return;
+        }
+
+        let path = self.path.clone();
+        let next = depth + 1;
+        if next >= cfg.levels.len() {
+            let ds_cfg = cfg.datasets.clone();
+            self.children = NodeChildren::Datasets(spawn_load(move || bg_load_datasets(path, ds_cfg)));
+        } else {
+            let level_cfg = cfg.levels[next].clone();
+            self.children = NodeChildren::Levels(spawn_load(move || bg_load_level(path, level_cfg)));
+        }
+    }
+
+    fn poll(&mut self) -> bool {
+        match &mut self.children {
+            NodeChildren::Levels(a) => {
+                let changed = a.poll();
+                if let Async::Done(children) = a {
+                    children.iter_mut().fold(changed, |acc, c| acc | c.poll())
+                } else {
+                    changed
+                }
+            }
+            NodeChildren::Datasets(a) => {
+                let changed = a.poll();
+                if let Async::Done(ds) = a { ds.poll_meta() | changed } else { changed }
+            }
+        }
+    }
+
+    fn is_loading(&self) -> bool {
+        match &self.children {
+            NodeChildren::Levels(a) => {
+                a.is_loading()
+                    || matches!(a, Async::Done(cs) if cs.iter().any(|c| c.is_loading()))
+            }
+            NodeChildren::Datasets(a) => {
+                a.is_loading() || matches!(a, Async::Done(ds) if ds.is_loading())
+            }
+        }
+    }
+
+    fn show(&mut self, ui: &mut egui::Ui, depth: usize, cfg: &DataBrowserConfig) -> Option<PathBuf> {
+        if tree_row(ui, self.open, &self.name) {
+            self.open = !self.open;
+            if self.open {
+                self.trigger_load(depth, cfg);
+            }
+        }
+
+        if !self.open {
+            return None;
+        }
+
+        let mut action = None;
+        ui.indent(&self.path, |ui| {
+            // Filter bar: hint names what's being filtered (children of this node).
+            let next = depth + 1;
+            let hint = if next < cfg.levels.len() {
+                format!("Filter {}…", cfg.levels[next].label)
+            } else {
+                "Filter files…".to_string()
+            };
+            filter_bar(ui, &mut self.child_filter, &hint);
+            let filter = self.child_filter.to_lowercase();
+
+            match &mut self.children {
+                NodeChildren::Levels(a) => match a {
+                    Async::Idle => {}
+                    Async::Loading(_) => loading_row(ui),
+                    Async::Failed(e) => error_row(ui, e),
+                    Async::Done(children) => {
+                        if children.is_empty() {
+                            let lbl = cfg.levels.get(next).map(|l| l.label.as_str()).unwrap_or("entries");
+                            ui.label(egui::RichText::new(format!("No {lbl} found")).small().weak());
+                        }
+                        for child in children.iter_mut() {
+                            if filter_matches(&child.name, &filter) {
+                                if let Some(p) = child.show(ui, next, cfg) {
+                                    action = Some(p);
+                                }
+                            }
+                        }
+                    }
+                },
+                NodeChildren::Datasets(a) => match a {
+                    Async::Idle => {}
+                    Async::Loading(_) => loading_row(ui),
+                    Async::Failed(e) => error_row(ui, e),
+                    Async::Done(datasets) => {
+                        if datasets.nodes.is_empty() {
+                            ui.label(egui::RichText::new("No datasets found").small().weak());
+                        }
+                        for ds in datasets.nodes.iter() {
+                            if filter_matches(&ds.name, &filter) {
+                                if ds.show(ui) {
+                                    action = Some(ds.path.clone());
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+        });
+        action
+    }
+}
+
+struct ProposalNode {
+    number: String,
+    open: bool,
+    child_filter: String,
+    children: NodeChildren,
+}
+
+impl ProposalNode {
+    fn trigger_load(&mut self, cfg: &DataBrowserConfig) {
+        let is_idle = match &self.children {
+            NodeChildren::Levels(a) => a.is_idle(),
+            NodeChildren::Datasets(a) => a.is_idle(),
+        };
+        if !is_idle {
+            return;
+        }
+
+        let path = PathBuf::from(&cfg.proposal_source.base_path).join(&self.number);
+        if cfg.levels.is_empty() {
+            let ds_cfg = cfg.datasets.clone();
+            self.children = NodeChildren::Datasets(spawn_load(move || bg_load_datasets(path, ds_cfg)));
+        } else {
+            let level_cfg = cfg.levels[0].clone();
+            self.children = NodeChildren::Levels(spawn_load(move || bg_load_level(path, level_cfg)));
+        }
+    }
+
+    fn poll(&mut self) -> bool {
+        match &mut self.children {
+            NodeChildren::Levels(a) => {
+                let changed = a.poll();
+                if let Async::Done(children) = a {
+                    children.iter_mut().fold(changed, |acc, c| acc | c.poll())
+                } else {
+                    changed
+                }
+            }
+            NodeChildren::Datasets(a) => {
+                let changed = a.poll();
+                if let Async::Done(ds) = a { ds.poll_meta() | changed } else { changed }
+            }
+        }
+    }
+
+    fn is_loading(&self) -> bool {
+        match &self.children {
+            NodeChildren::Levels(a) => {
+                a.is_loading()
+                    || matches!(a, Async::Done(cs) if cs.iter().any(|c| c.is_loading()))
+            }
+            NodeChildren::Datasets(a) => {
+                a.is_loading() || matches!(a, Async::Done(ds) if ds.is_loading())
+            }
+        }
+    }
+
+    fn show(&mut self, ui: &mut egui::Ui, cfg: &DataBrowserConfig) -> Option<PathBuf> {
+        if tree_row(ui, self.open, &self.number) {
+            self.open = !self.open;
+            if self.open {
+                self.trigger_load(cfg);
+            }
+        }
+
+        if !self.open {
+            return None;
+        }
+
+        let mut action = None;
+        ui.indent(&self.number, |ui| {
+            let hint = if cfg.levels.is_empty() {
+                "Filter files…".to_string()
+            } else {
+                format!("Filter {}…", cfg.levels[0].label)
+            };
+            filter_bar(ui, &mut self.child_filter, &hint);
+            let filter = self.child_filter.to_lowercase();
+
+            match &mut self.children {
+                NodeChildren::Levels(a) => match a {
+                    Async::Idle => {}
+                    Async::Loading(_) => loading_row(ui),
+                    Async::Failed(e) => error_row(ui, e),
+                    Async::Done(children) => {
+                        if children.is_empty() {
+                            let lbl = cfg.levels.first().map(|l| l.label.as_str()).unwrap_or("entries");
+                            ui.label(egui::RichText::new(format!("No {lbl} found")).small().weak());
+                        }
+                        for child in children.iter_mut() {
+                            if filter_matches(&child.name, &filter) {
+                                if let Some(p) = child.show(ui, 0, cfg) {
+                                    action = Some(p);
+                                }
+                            }
+                        }
+                    }
+                },
+                NodeChildren::Datasets(a) => match a {
+                    Async::Idle => {}
+                    Async::Loading(_) => loading_row(ui),
+                    Async::Failed(e) => error_row(ui, e),
+                    Async::Done(datasets) => {
+                        if datasets.nodes.is_empty() {
+                            ui.label(egui::RichText::new("No datasets found").small().weak());
+                        }
+                        for ds in datasets.nodes.iter() {
+                            if filter_matches(&ds.name, &filter) {
+                                if ds.show(ui) {
+                                    action = Some(ds.path.clone());
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+        });
+        action
+    }
+}
+
+// ─── UI helpers ───────────────────────────────────────────────────────────────
 
 fn filter_matches(label: &str, filter: &str) -> bool {
     filter.is_empty() || label.to_lowercase().contains(filter)
@@ -389,6 +597,22 @@ fn filter_bar(ui: &mut egui::Ui, value: &mut String, hint: &str) {
     ui.add_space(2.0);
 }
 
+fn tree_row(ui: &mut egui::Ui, open: bool, label: &str) -> bool {
+    let icon = if open { "▼" } else { "▶" };
+    let response = ui.selectable_label(false, format!("{icon} {label}"));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    response.clicked()
+}
+
+fn loading_row(ui: &mut egui::Ui) {
+    ui.horizontal(|ui| { ui.spinner(); ui.label("Loading…"); });
+}
+
+fn error_row(ui: &mut egui::Ui, e: &str) {
+    let resp = ui.label(egui::RichText::new(format!("⚠ {e}")).small());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("Error: {e}")));
+}
+
 impl DatasetNode {
     fn show(&self, ui: &mut egui::Ui) -> bool {
         let response = ui.add(
@@ -414,130 +638,6 @@ impl DatasetNode {
     }
 }
 
-fn tree_row(ui: &mut egui::Ui, open: bool, label: &str) -> bool {
-    let icon = if open { "▼" } else { "▶" };
-    let response = ui.selectable_label(false, format!("{icon} {label}"));
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
-    response.clicked()
-}
-
-fn loading_row(ui: &mut egui::Ui) {
-    ui.horizontal(|ui| { ui.spinner(); ui.label("Loading…"); });
-}
-
-impl ProteinNode {
-    fn show(&mut self, ui: &mut egui::Ui, file_filter: &str) -> Option<PathBuf> {
-        if tree_row(ui, self.open, &self.name) {
-            self.open = !self.open;
-            if self.open && self.datasets.is_idle() {
-                let path = self.raw_path.clone();
-                self.datasets = spawn_load(move || bg_load_datasets(path));
-            }
-        }
-
-        let mut action = None;
-        if self.open {
-            ui.indent(&self.raw_path, |ui| {
-                match &mut self.datasets {
-                    Async::Idle    => {}
-                    Async::Loading(_) => loading_row(ui),
-                    Async::Failed(e) => {
-                        let resp = ui.label(egui::RichText::new(format!("⚠ {e}")).small());
-                        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("Error: {e}")));
-                    }
-                    Async::Done(datasets) => {
-                        if datasets.nodes.is_empty() {
-                            ui.label(egui::RichText::new("No datasets found").small().weak());
-                        }
-                        for ds in datasets.nodes.iter() {
-                            if filter_matches(&ds.name, file_filter) {
-                                if ds.show(ui) { action = Some(ds.path.clone()); }
-                            }
-                        }
-                    }
-                }
-            });
-        }
-        action
-    }
-}
-
-impl VisitNode {
-    fn show(&mut self, ui: &mut egui::Ui) -> Option<PathBuf> {
-        if tree_row(ui, self.open, &self.date) {
-            self.open = !self.open;
-            if self.open && self.proteins.is_idle() {
-                let path = self.visit_path.clone();
-                self.proteins = spawn_load(move || bg_load_proteins(path));
-            }
-        }
-
-        let mut action = None;
-        if self.open {
-            ui.indent(&self.visit_path, |ui| {
-                filter_bar(ui, &mut self.file_filter, "Filter filenames…");
-                let file_filter = self.file_filter.to_lowercase();
-                match &mut self.proteins {
-                    Async::Idle    => {}
-                    Async::Loading(_) => loading_row(ui),
-                    Async::Failed(e) => {
-                        let resp = ui.label(egui::RichText::new(format!("⚠ {e}")).small());
-                        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("Error: {e}")));
-                    }
-                    Async::Done(proteins) => {
-                        if proteins.is_empty() {
-                            ui.label(egui::RichText::new("No proteins found").small().weak());
-                        }
-                        for p in proteins.iter_mut() {
-                            if let Some(path) = p.show(ui, &file_filter) { action = Some(path); }
-                        }
-                    }
-                }
-            });
-        }
-        action
-    }
-}
-
-impl ProposalNode {
-    fn show(&mut self, ui: &mut egui::Ui) -> Option<PathBuf> {
-        if tree_row(ui, self.open, &self.number) {
-            self.open = !self.open;
-            if self.open && self.visits.is_idle() {
-                let number = self.number.clone();
-                self.visits = spawn_load(move || bg_load_visits(number));
-            }
-        }
-
-        let mut action = None;
-        if self.open {
-            ui.indent(&self.number, |ui| {
-                filter_bar(ui, &mut self.visit_filter, "Filter dates…");
-                let visit_filter = self.visit_filter.to_lowercase();
-                match &mut self.visits {
-                    Async::Idle    => {}
-                    Async::Loading(_) => loading_row(ui),
-                    Async::Failed(e) => {
-                        let resp = ui.label(egui::RichText::new(format!("⚠ {e}")).small());
-                        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("Error: {e}")));
-                    }
-                    Async::Done(visits) => {
-                        if visits.is_empty() {
-                            ui.label(egui::RichText::new("No visits found").small().weak());
-                        }
-                        for v in visits.iter_mut() {
-                            if filter_matches(&v.date, &visit_filter) {
-                                if let Some(path) = v.show(ui) { action = Some(path); }
-                            }
-                        }
-                    }
-                }
-            });
-        }
-        action
-    }
-}
-
 // ─── DataBrowser ──────────────────────────────────────────────────────────────
 
 enum RootState {
@@ -548,44 +648,50 @@ enum RootState {
 pub struct DataBrowser {
     state: RootState,
     proposal_filter: String,
+    cfg: DataBrowserConfig,
 }
 
 impl DataBrowser {
-    pub fn new() -> Self {
+    pub fn new(cfg: DataBrowserConfig) -> Self {
+        let source = &cfg.proposal_source;
         let state = if let Some(cache) = load_proposal_cache() {
-            if cache_is_fresh(&cache) {
-                RootState::Ready(Self::make_proposal_nodes(&cache.proposals))
+            if cache_is_fresh(&cache) && cache.base_path == source.base_path {
+                RootState::Ready(Self::make_proposal_nodes(&cache.proposals, &cfg))
             } else {
-                Self::start_group_fetch()
+                Self::start_group_fetch(source.clone())
             }
         } else {
-            Self::start_group_fetch()
+            Self::start_group_fetch(source.clone())
         };
-        Self { state, proposal_filter: String::new() }
+        Self { state, proposal_filter: String::new(), cfg }
     }
 
-    fn make_proposal_nodes(proposals: &[String]) -> Vec<ProposalNode> {
+    fn make_proposal_nodes(proposals: &[String], cfg: &DataBrowserConfig) -> Vec<ProposalNode> {
+        let levels_empty = cfg.levels.is_empty();
         let mut nodes: Vec<ProposalNode> = proposals.iter().map(|p| ProposalNode {
             number: p.clone(),
             open: false,
-            visits: Async::Idle,
-            visit_filter: String::new(),
+            child_filter: String::new(),
+            children: if levels_empty {
+                NodeChildren::Datasets(Async::Idle)
+            } else {
+                NodeChildren::Levels(Async::Idle)
+            },
         }).collect();
         nodes.sort_by(|a, b| b.number.cmp(&a.number));
         nodes
     }
 
-    fn start_group_fetch() -> RootState {
+    fn start_group_fetch(source: ProposalSource) -> RootState {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let proposals = fetch_proposals_from_os();
-            save_proposal_cache(&proposals);
+            let proposals = fetch_proposals_from_os(&source);
+            save_proposal_cache(&proposals, &source.base_path);
             let _ = tx.send(proposals);
         });
         RootState::FetchingGroups(rx)
     }
 
-    /// True if any background load is in progress (caller should schedule repaint).
     pub fn is_loading(&self) -> bool {
         match &self.state {
             RootState::FetchingGroups(_) => true,
@@ -593,12 +699,11 @@ impl DataBrowser {
         }
     }
 
-    /// Poll all in-flight loads. Returns true if any state changed.
     pub fn poll(&mut self) -> bool {
         match &mut self.state {
             RootState::FetchingGroups(rx) => match rx.try_recv() {
                 Ok(proposals) => {
-                    self.state = RootState::Ready(Self::make_proposal_nodes(&proposals));
+                    self.state = RootState::Ready(Self::make_proposal_nodes(&proposals, &self.cfg));
                     true
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -613,7 +718,6 @@ impl DataBrowser {
         }
     }
 
-    /// Render the browser. Returns `Some(path)` if the user clicked a dataset.
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<PathBuf> {
         filter_bar(ui, &mut self.proposal_filter, "Filter proposals…");
         let proposal_filter = self.proposal_filter.to_lowercase();
@@ -631,10 +735,11 @@ impl DataBrowser {
                     ui.label(egui::RichText::new("No proposals found.").weak());
                     return None;
                 }
+                let cfg = &self.cfg;
                 let mut action = None;
                 for proposal in proposals.iter_mut() {
                     if filter_matches(&proposal.number, &proposal_filter) {
-                        if let Some(path) = proposal.show(ui) {
+                        if let Some(path) = proposal.show(ui, cfg) {
                             action = Some(path);
                         }
                     }

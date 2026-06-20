@@ -196,6 +196,7 @@ fn main() -> anyhow::Result<()> {
 
     let splash_folder = cfg.splash_folder.clone();
     let ui_scale = cfg.ui_scale;
+    let data_browser_cfg = cfg.data_browser.clone();
 
     eframe::run_native(
         "pumpkin",
@@ -204,7 +205,7 @@ fn main() -> anyhow::Result<()> {
             if let Some(scale) = ui_scale {
                 cc.egui_ctx.set_pixels_per_point(scale);
             }
-            Ok(Box::new(PumpkinApp::new(cc, dcu_url, poll_period_ms, unfocused_poll_period_ms, monitor_pause_ms, idle_pause_secs, auto_connect, contrast, overlays, splash_folder, remote_rx, commands_file, commands_file_enabled, commands_file_poll_interval_ms)))
+            Ok(Box::new(PumpkinApp::new(cc, dcu_url, poll_period_ms, unfocused_poll_period_ms, monitor_pause_ms, idle_pause_secs, auto_connect, contrast, overlays, splash_folder, remote_rx, commands_file, commands_file_enabled, commands_file_poll_interval_ms, data_browser_cfg)))
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
