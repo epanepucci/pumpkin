@@ -1400,6 +1400,17 @@ impl PumpkinApp {
         viewport::draw_overlays(&painter, &self.view, available, frame, &self.overlays);
         self.draw_series_name_overlay(ui, available, frame);
 
+        // Fullscreen hint in the top-right corner.
+        if ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
+            painter.text(
+                egui::pos2(available.right() - 8.0, available.top() + 8.0),
+                egui::Align2::RIGHT_TOP,
+                "Press F11 to exit fullscreen",
+                egui::FontId::proportional(12.0),
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 160),
+            );
+        }
+
         // Pixel coordinate + value tooltip at cursor.
         if let Some(hover) = response.hover_pos() {
             let img_pos = self.view.screen_to_image(hover, available.min);
@@ -1487,13 +1498,16 @@ impl PumpkinApp {
     }
 
     fn draw_series_name_overlay(&self, ui: &Ui, viewport: egui::Rect, frame: &Frame) {
-        let Some(label) = frame.metadata.name_pattern.as_deref() else {
+        let Some(name_pattern) = frame.metadata.name_pattern.as_deref() else {
             return;
         };
-
+        let full_label = match frame.metadata.data_collection_date.as_deref() {
+            Some(date) => format!("Last dataset on {}: {}", date, name_pattern),
+            None => name_pattern.to_string(),
+        };
         let max_text_width = (viewport.width() - 44.0).max(0.0);
         let max_chars = (max_text_width / 7.0).floor().max(8.0) as usize;
-        let label = elide_middle(label, max_chars);
+        let label = elide_middle(&full_label, max_chars);
 
         let font_id = egui::FontId::proportional(13.0);
         let galley = ui.painter().layout_no_wrap(
@@ -1548,6 +1562,10 @@ impl eframe::App for PumpkinApp {
 
         if ctx.input_mut(|i| i.consume_shortcut(&fullscreen_shortcut)) {
             let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            if is_fullscreen {
+                // Exiting fullscreen: ensure the panel is visible.
+                self.show_panel = true;
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
         }
 
