@@ -38,27 +38,6 @@ impl Hdf5Series {
         let pixel_size_y = read_scalar_f64(&master, "/entry/instrument/detector/y_pixel_size").ok();
         let exposure_time = read_scalar_f64(&master, "/entry/instrument/detector/count_time").ok();
 
-        let series_metadata = FrameMetadata {
-            beam_center_x,
-            beam_center_y,
-            detector_distance,
-            wavelength,
-            pixel_size_x,
-            pixel_size_y,
-            exposure_time,
-            name_pattern: Some(master_path.to_string_lossy().into_owned()),
-            ..Default::default()
-        };
-
-        // --- Saturation value ---
-        let saturation_value = master
-            .dataset("/entry/instrument/detector/saturation_value")
-            .ok()
-            .and_then(|ds| read_scalar_i64(&ds))
-            .map(|v| v.clamp(0, u16::MAX as i64) as u16)
-            .unwrap_or(u16::MAX);
-        eprintln!("HDF5: saturation_value = {saturation_value}");
-
         // --- Total frames: ntrigger * nimages ---
         let nimages = master
             .dataset("/entry/instrument/detector/detectorSpecific/nimages")
@@ -71,6 +50,32 @@ impl Hdf5Series {
             .and_then(|ds| ds.read_scalar::<u64>().ok())
             .unwrap_or(1);
         let total_frames = (nimages * ntrigger) as usize;
+
+        let data_collection_date = read_string_dataset(&master, "/entry/instrument/detector/detectorSpecific/data_collection_date")
+            .or_else(|| read_string_dataset(&master, "/entry/start_time"));
+
+        let series_metadata = FrameMetadata {
+            beam_center_x,
+            beam_center_y,
+            detector_distance,
+            wavelength,
+            pixel_size_x,
+            pixel_size_y,
+            exposure_time,
+            name_pattern: Some(master_path.to_string_lossy().into_owned()),
+            data_collection_date,
+            ntrigger: Some(ntrigger),
+            ..Default::default()
+        };
+
+        // --- Saturation value ---
+        let saturation_value = master
+            .dataset("/entry/instrument/detector/saturation_value")
+            .ok()
+            .and_then(|ds| read_scalar_i64(&ds))
+            .map(|v| v.clamp(0, u16::MAX as i64) as u16)
+            .unwrap_or(u16::MAX);
+        eprintln!("HDF5: saturation_value = {saturation_value}");
 
         if total_frames == 0 {
             bail!("Cannot determine number of frames from master file");
@@ -197,6 +202,18 @@ fn read_scalar_i64(ds: &hdf5::Dataset) -> Option<i64> {
     if let Ok(arr) = ds.read_1d::<u16>() { return arr.first().map(|&v| v as i64); }
     eprintln!("HDF5: could not read saturation_value (dtype size={}B) — defaulting to u16::MAX",
         ds.dtype().map(|dt| dt.size()).unwrap_or(0));
+    None
+}
+
+/// Read a scalar string dataset, trying variable-length and fixed-length encodings.
+fn read_string_dataset(file: &hdf5::File, path: &str) -> Option<String> {
+    let ds = file.dataset(path).ok()?;
+    if let Ok(s) = ds.read_scalar::<hdf5::types::VarLenUnicode>() {
+        return Some(s.to_string());
+    }
+    if let Ok(s) = ds.read_scalar::<hdf5::types::FixedAscii<64>>() {
+        return Some(s.to_string());
+    }
     None
 }
 

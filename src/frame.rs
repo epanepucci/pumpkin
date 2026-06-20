@@ -32,20 +32,23 @@ pub struct FrameMetadata {
     /// Incident beam energy in eV.
     pub incident_energy: Option<f64>,
 
-    /// Exposure time in seconds (from TIFF IFD).
+    /// Exposure time in seconds - count_time from SIMPLON
     pub exposure_time: Option<f64>,
 
-    /// Frame time in seconds (from detector config).
-    pub frame_time: Option<f64>,
-
     /// Total number of images in the series.
-    pub nimages: Option<u32>,
+    pub nimages: Option<u64>,
+
+    /// Total number of triggers in the series.
+    pub ntrigger: Option<u64>,
 
     /// FileWriter name pattern for the series.
     pub name_pattern: Option<String>,
 
     pub series_id: Option<i64>,
+
     pub image_number: Option<i64>,
+    /// Date and time when data collection started, as an ISO 8601 string.
+    pub data_collection_date: Option<String>,
 }
 
 impl Frame {

@@ -202,10 +202,12 @@ async fn fetch_series_metadata(client: &reqwest::Client, cfg: &MonitorConfig) ->
     let url_psx = cfg.detector_config_url("x_pixel_size");
     let url_psy = cfg.detector_config_url("y_pixel_size");
     let url_nimages = cfg.detector_config_url("nimages");
-    let url_frame_time = cfg.detector_config_url("frame_time");
+    let url_ntrigger = cfg.detector_config_url("ntrigger");
+    let url_count_time = cfg.detector_config_url("count_time");
     let url_name_pattern = cfg.filewriter_config_url("name_pattern");
+    let url_data_collection_date = cfg.detector_config_url("data_collection_date");
 
-    let (bcx, bcy, dist, wl, energy, psx, psy, nimages, frame_time, name_pattern) = tokio::join!(
+    let (bcx, bcy, dist, wl, energy, psx, psy, nimages, ntrigger, count_time, name_pattern, data_collection_date) = tokio::join!(
         fetch_config_f64(client, &url_bcx),
         fetch_config_f64(client, &url_bcy),
         fetch_config_f64(client, &url_dist),
@@ -213,9 +215,11 @@ async fn fetch_series_metadata(client: &reqwest::Client, cfg: &MonitorConfig) ->
         fetch_config_f64(client, &url_energy),
         fetch_config_f64(client, &url_psx),
         fetch_config_f64(client, &url_psy),
-        fetch_config_u32(client, &url_nimages),
-        fetch_config_f64(client, &url_frame_time),
+        fetch_config_u64(client, &url_nimages),
+        fetch_config_u64(client, &url_ntrigger),
+        fetch_config_f64(client, &url_count_time),
         fetch_config_string(client, &url_name_pattern),
+        fetch_config_string(client, &url_data_collection_date),
     );
     FrameMetadata {
         beam_center_x: bcx.ok(),
@@ -226,8 +230,10 @@ async fn fetch_series_metadata(client: &reqwest::Client, cfg: &MonitorConfig) ->
         pixel_size_x: psx.ok(),
         pixel_size_y: psy.ok(),
         nimages: nimages.ok(),
-        frame_time: frame_time.ok(),
+        ntrigger: ntrigger.ok(),
+        exposure_time: count_time.ok(), // exposure_time is cannonical in the MX community
         name_pattern: name_pattern.ok(),
+        data_collection_date: data_collection_date.ok(),
         ..FrameMetadata::default()
     }
 }
@@ -238,10 +244,10 @@ async fn fetch_config_f64(client: &reqwest::Client, url: &str) -> Result<f64> {
     json["value"].as_f64().context("value not f64")
 }
 
-async fn fetch_config_u32(client: &reqwest::Client, url: &str) -> Result<u32> {
+async fn fetch_config_u64(client: &reqwest::Client, url: &str) -> Result<u64> {
     let json: serde_json::Value =
         client.get(url).send().await?.error_for_status()?.json().await?;
-    json["value"].as_u64().map(|v| v as u32).context("value not uint")
+    json["value"].as_u64().context("value not uint")
 }
 
 async fn fetch_config_string(client: &reqwest::Client, url: &str) -> Result<String> {

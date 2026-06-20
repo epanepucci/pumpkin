@@ -73,10 +73,11 @@ pub fn export_png(
     chunk!("IncidentEnergy",   meta.incident_energy,    "{:.3} eV");
     chunk!("PixelSizeX",       meta.pixel_size_x,       "{:.3e} m");
     chunk!("PixelSizeY",       meta.pixel_size_y,       "{:.3e} m");
-    chunk!("FrameTime",        meta.frame_time,         "{:.6} s");
     chunk!("ExposureTime",     meta.exposure_time,      "{:.6} s");
     chunk!("Nimages",          meta.nimages,            "{}");
+    chunk!("Ntrigger",         meta.ntrigger,           "{}");
     chunk!("ImageNumber",      meta.image_number,       "{}");
+    chunk!("Date",             meta.data_collection_date.clone(),"{}");
     chunk!("SeriesId",         meta.series_id,          "{}");
     if let Some(ref np) = meta.name_pattern {
         chunks.push(("NamePattern".into(), np.clone()));

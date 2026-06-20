@@ -950,10 +950,12 @@ impl PumpkinApp {
                 row!("Distance", meta.detector_distance.map_or("-".into(), |v| format!("{:.1} mm", v * 1000.0)));
                 row!("Wavelength", meta.wavelength.map_or("-".into(), |v| format!("{v:.4} Å")));
                 row!("Energy", meta.incident_energy.map_or("-".into(), |v| format!("{:.3} keV", v / 1000.0)));
-                row!("Frame time", meta.frame_time.map_or("-".into(), |v| format!("{:.1} ms", v * 1000.0)));
                 row!("Exposure", meta.exposure_time.map_or("-".into(), |v| format!("{v:.4} s")));
                 if let Some(n) = meta.nimages {
-                    row!("N images", n.to_string());
+                    row!("# images", n.to_string());
+                }
+                if let Some(n) = meta.ntrigger {
+                    row!("# triggers", n.to_string());
                 }
                 if let Some(n) = meta.image_number {
                     row!("Image #", n.to_string());
@@ -962,6 +964,9 @@ impl PumpkinApp {
                     if let Some(name) = display_name(p) {
                         row!("Name", name.to_string());
                     }
+                }
+                if let Some(ref d) = meta.data_collection_date {
+                    row!("Collect date", d.clone());
                 }
             });
         } else {
@@ -1531,6 +1536,7 @@ impl eframe::App for PumpkinApp {
         let help_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Questionmark);
         let panel_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Tab);
         let fullscreen_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F11);
+        let save_png_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
 
         if ctx.input_mut(|i| i.consume_shortcut(&help_shortcut)) {
             self.show_help = !self.show_help;
@@ -1575,6 +1581,12 @@ impl eframe::App for PumpkinApp {
 
         if self.show_goto_frame {
             self.goto_frame(ctx);
+        }
+
+        if ctx.input_mut(|i| i.consume_shortcut(&save_png_shortcut)) {
+            println!("saving PNG...");
+
+            self.save_png();
         }
 
         if ctx.input_mut(|i| i.consume_shortcut(&quit_shortcut)) {
