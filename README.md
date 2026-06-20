@@ -14,6 +14,7 @@ A desktop application for viewing X-ray diffraction images from DECTRIS EIGER de
 - **Viewport** — zoom/pan with mouse, fit-to-view, export the current frame as PNG
 - **Contrast controls** — auto and manual min/max, gamma correction, multiple colormaps (Inferno, Standard, Grayscale, Rocket, Heat), log-scale histogram
 - **Overlays** — configurable resolution rings (d-spacing in Å) and beam-center crosshair drawn on the image
+- **Hover tooltip** — balloon near the cursor showing pixel coordinates, raw value, and d-spacing at that position (requires beam geometry metadata)
 - **Dozor integration** — display per-frame quality scores (Dozor score, spot count, visible resolution) loaded from a JSON file
 - **Remote control** — TCP socket (default port 8100) and optional commands file for external tools to push `{"file": ..., "frame": ...}` commands
 - **Idle pause** — automatically slows or pauses monitor polling when the window is idle to avoid hammering the detector
@@ -94,6 +95,10 @@ font_scale   = 1.0
 enabled      = true
 color        = [0, 200, 255, 200]
 stroke_width = 1.5
+
+# Hover tooltip balloon offset from the mouse pointer (screen pixels, default 20):
+hover_tooltip_offset_x = 20
+hover_tooltip_offset_y = 20
 
 # Override the default ring set (d-spacing in Å):
 [[rings]]
