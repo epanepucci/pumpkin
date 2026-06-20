@@ -249,7 +249,7 @@ impl PumpkinApp {
             goto_frame_input: "0".to_string(),
             auto_region: false,
             lock_zoom: true,
-            zoom_speed: 0.02,
+            zoom_speed: 0.006,
             active_panel: 1,
             show_help: false,
             show_panel: true,
@@ -642,8 +642,8 @@ impl PumpkinApp {
                 egui::Grid::new("viewport_grid").num_columns(2).show(ui, |ui| {
                     ui.label("Zoom speed");
                     ui.add(
-                        egui::Slider::new(&mut self.zoom_speed, 0.005..=0.1)
-                            .step_by(0.005)
+                        egui::Slider::new(&mut self.zoom_speed, 0.001..=0.1)
+                            .step_by(0.001)
                             .fixed_decimals(3),
                     );
                     ui.end_row();
