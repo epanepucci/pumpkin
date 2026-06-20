@@ -1487,7 +1487,7 @@ impl PumpkinApp {
     }
 
     fn draw_series_name_overlay(&self, ui: &Ui, viewport: egui::Rect, frame: &Frame) {
-        let Some(label) = frame.metadata.name_pattern.as_deref().and_then(display_name) else {
+        let Some(label) = frame.metadata.name_pattern.as_deref() else {
             return;
         };
 
