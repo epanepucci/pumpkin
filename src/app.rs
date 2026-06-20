@@ -1413,20 +1413,45 @@ impl PumpkinApp {
             );
         }
 
-        // Pixel coordinate + value tooltip at cursor.
+        // Hover tooltip balloon: pixel coords, value, and resolution near the cursor.
         if let Some(hover) = response.hover_pos() {
             let img_pos = self.view.screen_to_image(hover, available.min);
             let ix = img_pos.x as i64;
             let iy = img_pos.y as i64;
             if ix >= 0 && iy >= 0 && ix < frame.width as i64 && iy < frame.height as i64 {
                 let value = frame.pixels[(iy as u32 * frame.width + ix as u32) as usize];
-                painter.text(
-                    available.max - egui::Vec2::new(8.0, 8.0),
-                    egui::Align2::RIGHT_BOTTOM,
-                    format!("({ix}, {iy}) = {value}"),
-                    egui::FontId::monospace(12.0),
-                    egui::Color32::WHITE,
+                let resolution = viewport::pixel_to_resolution(ix as f64, iy as f64, frame);
+
+                let line1 = format!("x={ix}  y={iy}  ={value}");
+                let line2 = resolution.map(|d| format!("d = {d:.2} Å"));
+
+                let font = egui::FontId::monospace(12.0);
+                let color = egui::Color32::WHITE;
+                let padding = egui::vec2(6.0, 4.0);
+                let line_gap = 2.0;
+
+                let g1 = painter.layout_no_wrap(line1, font.clone(), color);
+                let g2 = line2.as_deref().map(|s| painter.layout_no_wrap(s.to_string(), font.clone(), color));
+
+                let text_w = g2.as_ref().map_or(g1.size().x, |g| g1.size().x.max(g.size().x));
+                let text_h = g1.size().y + g2.as_ref().map_or(0.0, |g| line_gap + g.size().y);
+                let box_size = egui::vec2(text_w + padding.x * 2.0, text_h + padding.y * 2.0);
+
+                // Position at cursor + offset, clamped so the box stays inside the viewport.
+                let offset = self.overlays.hover_tooltip_offset;
+                let origin = egui::pos2(
+                    (hover.x + offset.x).min(available.right()  - box_size.x - 2.0),
+                    (hover.y + offset.y).min(available.bottom() - box_size.y - 2.0),
                 );
+                let bg_rect = egui::Rect::from_min_size(origin, box_size);
+
+                painter.rect_filled(bg_rect, 3.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180));
+                let text_origin = origin + padding;
+                let g1_h = g1.size().y;
+                painter.galley(text_origin, g1, color);
+                if let Some(g) = g2 {
+                    painter.galley(text_origin + egui::vec2(0.0, g1_h + line_gap), g, color);
+                }
             }
         }
 

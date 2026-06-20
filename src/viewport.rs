@@ -282,6 +282,9 @@ pub struct OverlaySettings {
     pub ring_stroke_width: f32,
     /// Multiplier applied to ring-label font size.
     pub ring_font_scale: f32,
+
+    /// Offset of the hover tooltip balloon from the mouse pointer (screen pixels).
+    pub hover_tooltip_offset: egui::Vec2,
 }
 
 impl Default for OverlaySettings {
@@ -299,6 +302,34 @@ impl Default for OverlaySettings {
             ring_color: cyan,
             ring_stroke_width: 1.0,
             ring_font_scale: 1.0,
+            hover_tooltip_offset: egui::Vec2::new(20.0, 20.0),
         }
     }
+}
+
+/// Compute the d-spacing (Å) at image pixel `(ix, iy)` given the frame's geometry metadata.
+/// Returns `None` when any required metadata field (beam center, distance, wavelength,
+/// pixel size) is absent or when the pixel is at the beam center.
+pub fn pixel_to_resolution(ix: f64, iy: f64, frame: &Frame) -> Option<f64> {
+    let meta = &frame.metadata;
+    let wavelength = meta.wavelength.or_else(|| {
+        meta.incident_energy.filter(|&e| e > 0.0).map(|e| 12398.4 / e)
+    })?;
+    let cx = meta.beam_center_x?;
+    let cy = meta.beam_center_y?;
+    let distance = meta.detector_distance?;
+    let px = meta.pixel_size_x?;
+
+    let dx_m = (ix - cx) * px;
+    let dy_m = (iy - cy) * px;
+    let r_m = (dx_m * dx_m + dy_m * dy_m).sqrt();
+    if r_m == 0.0 {
+        return None;
+    }
+    let two_theta = (r_m / distance).atan();
+    let sin_theta = (two_theta / 2.0).sin();
+    if sin_theta == 0.0 {
+        return None;
+    }
+    Some(wavelength / (2.0 * sin_theta))
 }

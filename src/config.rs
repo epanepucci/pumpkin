@@ -79,6 +79,12 @@ pub struct Config {
     /// NFS/GPFS-backed paths may not reliably emit local inotify events.
     #[serde(alias = "commands-file-poll-interval-ms")]
     pub commands_file_poll_interval_ms: Option<u64>,
+    /// X offset of the hover tooltip balloon from the mouse pointer (screen pixels). Default 20.
+    #[serde(alias = "hover-tooltip-offset-x")]
+    pub hover_tooltip_offset_x: Option<f32>,
+    /// Y offset of the hover tooltip balloon from the mouse pointer (screen pixels). Default 20.
+    #[serde(alias = "hover-tooltip-offset-y")]
+    pub hover_tooltip_offset_y: Option<f32>,
     pub contrast: ContrastConfig,
     #[serde(alias = "resolution-rings")]
     pub resolution_rings: RingConfig,

@@ -171,6 +171,12 @@ fn main() -> anyhow::Result<()> {
     if let Some(w) = cfg.beam_center.stroke_width {
         overlays.beam_center_stroke_width = w;
     }
+    if let Some(x) = cfg.hover_tooltip_offset_x {
+        overlays.hover_tooltip_offset.x = x;
+    }
+    if let Some(y) = cfg.hover_tooltip_offset_y {
+        overlays.hover_tooltip_offset.y = y;
+    }
 
     // Build a tokio runtime and run it in a background thread so that async
     // monitor polling coexists with the egui event loop on the main thread.
