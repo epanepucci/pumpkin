@@ -234,8 +234,18 @@ mod tests {
 
     #[test]
     fn test_open_and_read_frame() {
-        let master = std::path::Path::new("/home/ezepan/github/pumpkin/raw_data/lyzo-mono_9_master.h5");
-        let series = Hdf5Series::open(master).expect("open master");
+        let legacy_master =
+            std::path::PathBuf::from("/home/ezepan/github/pumpkin/raw_data/lyzo-mono_9_master.h5");
+        let master = std::env::var_os("PUMPKIN_HDF5_TEST_MASTER")
+            .map(std::path::PathBuf::from)
+            .or_else(|| legacy_master.exists().then_some(legacy_master));
+
+        let Some(master) = master else {
+            eprintln!("skipping HDF5 fixture test; set PUMPKIN_HDF5_TEST_MASTER to a sample master file");
+            return;
+        };
+
+        let series = Hdf5Series::open(&master).expect("open master");
 
         assert_eq!(series.total_frames, 50000);
         assert_eq!(series.saturation_value, 32766);

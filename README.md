@@ -21,16 +21,30 @@ A desktop application for viewing X-ray diffraction images from DECTRIS EIGER de
 
 ## Requirements
 
-- Linux (X11 or Wayland)
+- Linux (X11 or Wayland) or macOS
 - Rust stable toolchain
-- System packages: `libxkbcommon`, `gtk3`, `zlib`, Vulkan loader (`vulkan-loader` + `mesa-vulkan-drivers` for software fallback)
-- HDF5 bitshuffle plugin (`libH5Zbshuf.so`) if reading DECTRIS EIGER files with bitshuffle compression
+- Linux system packages: `libxkbcommon`, `gtk3`, `zlib`, Vulkan loader (`vulkan-loader` + `mesa-vulkan-drivers` for software fallback)
+- macOS build tools: Xcode Command Line Tools plus `cmake` (`brew install cmake` if needed)
+- HDF5 bitshuffle plugin if reading DECTRIS EIGER files with bitshuffle compression (`libH5Zbshuf.so` on Linux, `libH5Zbshuf.dylib` or `.bundle` on macOS)
 
 ## Building
 
 ```bash
 cargo build --release
 ```
+
+### macOS app bundle
+
+Build a double-clickable app bundle and zip archive:
+
+```bash
+scripts/build-macos.sh          # outputs builds/Pumpkin.app and builds/Pumpkin-macos-<arch>.zip
+open builds/Pumpkin.app
+```
+
+The app is ad-hoc signed for local use when `codesign` is available. It is not notarized, so distributing it outside your machine may still require Gatekeeper approval or a Developer ID signing/notarization step.
+
+If DECTRIS EIGER files require bitshuffle, install the HDF5 bitshuffle plugin and either put it in a standard Homebrew/HDF5 plugin directory or set `hdf5_plugin_path` in `config.toml`. Finder-launched apps do not inherit shell environment variables reliably, so config-based plugin paths are preferred on macOS.
 
 ### Rocky Linux 8 / RHEL 8 binary
 

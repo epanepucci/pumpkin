@@ -53,18 +53,43 @@ fn setup_hdf5_plugin_path(config_path: Option<&std::path::Path>) {
         return; // already set by the user — respect it
     }
 
-    let plugin_filenames = ["libH5Zbshuf.so", "libhdf5_bshuf.so", "libh5bshuf.so"];
+    let plugin_filenames = [
+        "libH5Zbshuf.so",
+        "libhdf5_bshuf.so",
+        "libh5bshuf.so",
+        "libH5Zbshuf.dylib",
+        "libhdf5_bshuf.dylib",
+        "libh5bshuf.dylib",
+        "libH5Zbshuf.bundle",
+        "libhdf5_bshuf.bundle",
+        "libh5bshuf.bundle",
+    ];
 
     // Config-specified path takes priority over auto-discovery candidates.
     let mut candidates: Vec<String> = Vec::new();
     if let Some(p) = config_path {
         candidates.push(p.to_string_lossy().into_owned());
     }
+
+    if let Ok(prefix) = std::env::var("HOMEBREW_PREFIX") {
+        candidates.extend([
+            format!("{prefix}/lib/plugin"),
+            format!("{prefix}/lib/hdf5/plugin"),
+            format!("{prefix}/opt/hdf5/lib/plugin"),
+        ]);
+    }
+
     candidates.extend([
+        "/opt/homebrew/lib/plugin".to_string(),
+        "/opt/homebrew/lib/hdf5/plugin".to_string(),
+        "/opt/homebrew/opt/hdf5/lib/plugin".to_string(),
+        "/usr/local/lib/plugin".to_string(),
+        "/usr/local/lib/hdf5/plugin".to_string(),
+        "/usr/local/opt/hdf5/lib/plugin".to_string(),
+        "/usr/local/hdf5/lib/plugin".to_string(),
         "/usr/lib/x86_64-linux-gnu/hdf5/serial/plugins".to_string(),
         "/usr/lib/x86_64-linux-gnu/hdf5/plugins".to_string(),
         "/usr/lib64/hdf5/plugins".to_string(),
-        "/usr/local/hdf5/lib/plugin".to_string(),
     ]);
     if let Ok(home) = std::env::var("HOME") {
         candidates.push(format!("{home}/.hdf5/lib/plugin"));
