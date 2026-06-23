@@ -1455,6 +1455,74 @@ impl PumpkinApp {
             }
         }
 
+        // Loupe (magnifying glass): hold Z to see a zoomed region around the cursor.
+        let z_held = ctx.input(|i| i.key_down(egui::Key::Z));
+        if z_held {
+            if let Some(hover) = response.hover_pos() {
+                let img_pos = self.view.screen_to_image(hover, available.min);
+                let ix = img_pos.x;
+                let iy = img_pos.y;
+                if ix >= 0.0 && iy >= 0.0 && ix < frame.width as f32 && iy < frame.height as f32 {
+                    const LOUPE_RADIUS: i64 = 10;
+                    const LOUPE_PX: f32 = 200.0;
+
+                    let fw = frame.width as f32;
+                    let fh = frame.height as f32;
+                    let ix_int = ix.floor() as i64;
+                    let iy_int = iy.floor() as i64;
+
+                    // UV snapped to integer pixel boundaries for clean cell alignment.
+                    let src_x0 = (ix_int - LOUPE_RADIUS).max(0);
+                    let src_y0 = (iy_int - LOUPE_RADIUS).max(0);
+                    let src_x1 = (ix_int + LOUPE_RADIUS).min(frame.width as i64);
+                    let src_y1 = (iy_int + LOUPE_RADIUS).min(frame.height as i64);
+                    let uv = egui::Rect::from_min_max(
+                        egui::pos2(src_x0 as f32 / fw, src_y0 as f32 / fh),
+                        egui::pos2(src_x1 as f32 / fw, src_y1 as f32 / fh),
+                    );
+
+                    let loupe_origin = egui::pos2(
+                        (hover.x + 30.0).min(available.right()  - LOUPE_PX - 4.0).max(available.left() + 4.0),
+                        (hover.y + 30.0).min(available.bottom() - LOUPE_PX - 4.0).max(available.top()  + 4.0),
+                    );
+                    let loupe_rect = egui::Rect::from_min_size(loupe_origin, egui::vec2(LOUPE_PX, LOUPE_PX));
+
+                    painter.rect_filled(loupe_rect, 2.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 220));
+                    painter.image(texture_id, loupe_rect, uv, egui::Color32::WHITE);
+                    painter.rect_stroke(loupe_rect, 2.0, egui::Stroke::new(1.5, egui::Color32::WHITE), egui::StrokeKind::Outside);
+
+                    // Pixel value labels — one per source pixel, centered in its cell.
+                    let uv_w = uv.width();
+                    let uv_h = uv.height();
+                    let label_font = egui::FontId::monospace(7.0);
+                    for spy in src_y0..src_y1 {
+                        for spx in src_x0..src_x1 {
+                            let value = frame.pixels[(spy as u32 * frame.width + spx as u32) as usize];
+                            let screen_x = loupe_origin.x + ((spx as f32 + 0.5) / fw - uv.min.x) / uv_w * LOUPE_PX;
+                            let screen_y = loupe_origin.y + ((spy as f32 + 0.5) / fh - uv.min.y) / uv_h * LOUPE_PX;
+                            painter.text(
+                                egui::pos2(screen_x, screen_y),
+                                egui::Align2::CENTER_CENTER,
+                                value.to_string(),
+                                label_font.clone(),
+                                egui::Color32::WHITE,
+                            );
+                        }
+                    }
+
+                    // Crosshair marking the cursor pixel.
+                    let ch_x = loupe_origin.x + ((ix_int as f32 + 0.5) / fw - uv.min.x) / uv_w * LOUPE_PX;
+                    let ch_y = loupe_origin.y + ((iy_int as f32 + 0.5) / fh - uv.min.y) / uv_h * LOUPE_PX;
+                    let cell = LOUPE_PX / (uv_w * fw);
+                    let arm = cell * 0.4;
+                    let ch_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 80, 80, 220));
+                    let c = egui::pos2(ch_x, ch_y);
+                    painter.line_segment([egui::pos2(c.x - arm, c.y), egui::pos2(c.x + arm, c.y)], ch_stroke);
+                    painter.line_segment([egui::pos2(c.x, c.y - arm), egui::pos2(c.x, c.y + arm)], ch_stroke);
+                }
+            }
+        }
+
         // Dozor toggle button — shown whenever dozor data is loaded.
         if self.dozor_data.is_some() {
             let label = if self.dozor_collapsed { "▲ Dozor" } else { "▼ Dozor" };
