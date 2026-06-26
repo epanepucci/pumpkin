@@ -85,6 +85,9 @@ pub struct Config {
     /// Y offset of the hover tooltip balloon from the mouse pointer (screen pixels). Default 20.
     #[serde(alias = "hover-tooltip-offset-y")]
     pub hover_tooltip_offset_y: Option<f32>,
+    /// Half-width in source pixels of the loupe region shown when Z is held (default 10 → 20×20 pixels).
+    #[serde(alias = "loupe-radius")]
+    pub loupe_radius: Option<u32>,
     pub contrast: ContrastConfig,
     #[serde(alias = "resolution-rings")]
     pub resolution_rings: RingConfig,

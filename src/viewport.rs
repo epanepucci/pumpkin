@@ -285,6 +285,10 @@ pub struct OverlaySettings {
 
     /// Offset of the hover tooltip balloon from the mouse pointer (screen pixels).
     pub hover_tooltip_offset: egui::Vec2,
+
+    /// Half-width (in source pixels) of the loupe region shown when Z is held.
+    /// The loupe covers `loupe_radius * 2` × `loupe_radius * 2` pixels. Default 10.
+    pub loupe_radius: u32,
 }
 
 impl Default for OverlaySettings {
@@ -303,6 +307,7 @@ impl Default for OverlaySettings {
             ring_stroke_width: 1.0,
             ring_font_scale: 1.0,
             hover_tooltip_offset: egui::Vec2::new(20.0, 20.0),
+            loupe_radius: 4,
         }
     }
 }

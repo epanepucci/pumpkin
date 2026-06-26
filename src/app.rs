@@ -1414,6 +1414,8 @@ impl PumpkinApp {
         }
 
         // Hover tooltip balloon: pixel coords, value, and resolution near the cursor.
+        // tooltip_rect is saved so the loupe can avoid overlapping it.
+        let mut tooltip_rect: Option<egui::Rect> = None;
         if let Some(hover) = response.hover_pos() {
             let img_pos = self.view.screen_to_image(hover, available.min);
             let ix = img_pos.x as i64;
@@ -1444,6 +1446,7 @@ impl PumpkinApp {
                     (hover.y + offset.y).min(available.bottom() - box_size.y - 2.0),
                 );
                 let bg_rect = egui::Rect::from_min_size(origin, box_size);
+                tooltip_rect = Some(bg_rect);
 
                 painter.rect_filled(bg_rect, 3.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180));
                 let text_origin = origin + padding;
@@ -1463,7 +1466,7 @@ impl PumpkinApp {
                 let ix = img_pos.x;
                 let iy = img_pos.y;
                 if ix >= 0.0 && iy >= 0.0 && ix < frame.width as f32 && iy < frame.height as f32 {
-                    const LOUPE_RADIUS: i64 = 10;
+                    let loupe_radius = self.overlays.loupe_radius as i64;
                     const LOUPE_PX: f32 = 200.0;
 
                     let fw = frame.width as f32;
@@ -1472,20 +1475,42 @@ impl PumpkinApp {
                     let iy_int = iy.floor() as i64;
 
                     // UV snapped to integer pixel boundaries for clean cell alignment.
-                    let src_x0 = (ix_int - LOUPE_RADIUS).max(0);
-                    let src_y0 = (iy_int - LOUPE_RADIUS).max(0);
-                    let src_x1 = (ix_int + LOUPE_RADIUS).min(frame.width as i64);
-                    let src_y1 = (iy_int + LOUPE_RADIUS).min(frame.height as i64);
+                    let src_x0 = (ix_int - loupe_radius).max(0);
+                    let src_y0 = (iy_int - loupe_radius).max(0);
+                    let src_x1 = (ix_int + loupe_radius).min(frame.width as i64);
+                    let src_y1 = (iy_int + loupe_radius).min(frame.height as i64);
                     let uv = egui::Rect::from_min_max(
                         egui::pos2(src_x0 as f32 / fw, src_y0 as f32 / fh),
                         egui::pos2(src_x1 as f32 / fw, src_y1 as f32 / fh),
                     );
 
-                    let loupe_origin = egui::pos2(
-                        (hover.x + 30.0).min(available.right()  - LOUPE_PX - 4.0).max(available.left() + 4.0),
-                        (hover.y + 30.0).min(available.bottom() - LOUPE_PX - 4.0).max(available.top()  + 4.0),
-                    );
-                    let loupe_rect = egui::Rect::from_min_size(loupe_origin, egui::vec2(LOUPE_PX, LOUPE_PX));
+                    // Place the loupe in the first quadrant around the cursor that
+                    // fits inside the viewport and does not overlap the tooltip.
+                    let loupe_size = egui::vec2(LOUPE_PX, LOUPE_PX);
+                    let m = 10.0_f32;
+                    let offsets = [
+                        egui::vec2(m, m),                           // lower-right
+                        egui::vec2(m, -LOUPE_PX - m),              // upper-right
+                        egui::vec2(-LOUPE_PX - m, m),              // lower-left
+                        egui::vec2(-LOUPE_PX - m, -LOUPE_PX - m), // upper-left
+                    ];
+                    let loupe_rect = offsets.iter()
+                        .map(|&off| {
+                            let origin = egui::pos2(
+                                (hover.x + off.x).clamp(available.left() + 4.0, available.right()  - LOUPE_PX - 4.0),
+                                (hover.y + off.y).clamp(available.top()  + 4.0, available.bottom() - LOUPE_PX - 4.0),
+                            );
+                            egui::Rect::from_min_size(origin, loupe_size)
+                        })
+                        .find(|r| tooltip_rect.map_or(true, |tr| !r.intersects(tr)))
+                        .unwrap_or_else(|| {
+                            let origin = egui::pos2(
+                                (hover.x + m).clamp(available.left() + 4.0, available.right()  - LOUPE_PX - 4.0),
+                                (hover.y + m).clamp(available.top()  + 4.0, available.bottom() - LOUPE_PX - 4.0),
+                            );
+                            egui::Rect::from_min_size(origin, loupe_size)
+                        });
+                    let loupe_origin = loupe_rect.min;
 
                     painter.rect_filled(loupe_rect, 2.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 220));
                     painter.image(texture_id, loupe_rect, uv, egui::Color32::WHITE);

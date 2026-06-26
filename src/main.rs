@@ -202,6 +202,9 @@ fn main() -> anyhow::Result<()> {
     if let Some(y) = cfg.hover_tooltip_offset_y {
         overlays.hover_tooltip_offset.y = y;
     }
+    if let Some(r) = cfg.loupe_radius {
+        overlays.loupe_radius = r;
+    }
 
     // Build a tokio runtime and run it in a background thread so that async
     // monitor polling coexists with the egui event loop on the main thread.
