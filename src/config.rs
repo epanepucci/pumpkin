@@ -97,7 +97,7 @@ pub struct Config {
     /// Each entry requires `resolution` (d-spacing in Å) and optionally `label`.
     pub rings: Option<Vec<RingEntry>>,
     #[serde(alias = "data-browser")]
-    pub data_browser: DataBrowserConfig,
+    pub data_browser: Option<DataBrowserConfig>,
 }
 
 /// One explicit resolution ring from the config file.

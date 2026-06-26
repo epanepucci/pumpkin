@@ -142,7 +142,7 @@ pub struct PumpkinApp {
 
     file_dialog: FileDialog,
 
-    data_browser: crate::data_browser::DataBrowser,
+    data_browser: Option<crate::data_browser::DataBrowser>,
 
     dozor_data: Option<crate::dozor::DozorData>,
     dozor_collapsed: bool,
@@ -204,7 +204,7 @@ impl PumpkinApp {
         commands_file: Option<std::path::PathBuf>,
         commands_file_enabled: bool,
         commands_file_poll_interval_ms: u64,
-        data_browser_cfg: crate::config::DataBrowserConfig,
+        data_browser_cfg: Option<crate::config::DataBrowserConfig>,
     ) -> Self {
         let (on_demand_tx, on_demand_rx) = std::sync::mpsc::sync_channel(4);
         let mut app = Self {
@@ -262,7 +262,7 @@ impl PumpkinApp {
             last_location: Self::load_last_location(),
             file_dialog: FileDialog::new()
                 .add_file_filter_extensions("HDF5 master", vec!["h5"]),
-            data_browser: crate::data_browser::DataBrowser::new(data_browser_cfg),
+            data_browser: data_browser_cfg.map(crate::data_browser::DataBrowser::new),
             dozor_data: None,
             dozor_collapsed: false,
             remote_rx,
@@ -1245,10 +1245,12 @@ impl PumpkinApp {
         } // end active_panel == 1
 
         // -- Data browser --
-        if Self::accordion_header(ui, "Data browser", self.active_panel == 0) { self.active_panel = 0; }
-        if self.active_panel == 0 {
-            if let Some(path) = self.data_browser.show(ui) {
-                panel_action = Some(path);
+        if let Some(ref mut db) = self.data_browser {
+            if Self::accordion_header(ui, "Data browser", self.active_panel == 0) { self.active_panel = 0; }
+            if self.active_panel == 0 {
+                if let Some(path) = db.show(ui) {
+                    panel_action = Some(path);
+                }
             }
         }
 
@@ -1898,9 +1900,11 @@ impl eframe::App for PumpkinApp {
         }
 
         // Poll data browser background loads; request repaint while loading.
-        if self.data_browser.poll() { ctx.request_repaint(); }
-        if self.data_browser.is_loading() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        if let Some(ref mut db) = self.data_browser {
+            if db.poll() { ctx.request_repaint(); }
+            if db.is_loading() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
         }
 
         let mut browser_file: Option<std::path::PathBuf> = None;
