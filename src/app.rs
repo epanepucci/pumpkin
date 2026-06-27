@@ -40,6 +40,11 @@ impl Default for ContrastState {
     }
 }
 
+struct LineProfilePeak {
+    index: usize,
+    d_spacing: Option<f64>,
+}
+
 pub struct PumpkinApp {
     frame: Option<Arc<Frame>>,
     frame_rx: Option<watch::Receiver<Option<MonitorBatch>>>,
@@ -1722,7 +1727,13 @@ impl PumpkinApp {
             .show(ctx, |ui| {
                 let size = ui.available_size();
                 let (resp, painter) = ui.allocate_painter(size, egui::Sense::hover());
-                Self::draw_line_profile(&painter, resp.rect, &data);
+                let peaks = match (self.frame.as_deref(), self.line_profile_start, self.line_profile_end) {
+                    (Some(frame), Some(start), Some(end)) => {
+                        Self::line_profile_peaks(frame, start, end, &data)
+                    }
+                    _ => Vec::new(),
+                };
+                Self::draw_line_profile(&painter, resp.rect, &data, &peaks);
             });
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             open = false;
@@ -1734,13 +1745,13 @@ impl PumpkinApp {
         }
     }
 
-    fn draw_line_profile(painter: &egui::Painter, rect: egui::Rect, data: &[f32]) {
+    fn draw_line_profile(painter: &egui::Painter, rect: egui::Rect, data: &[f32], peaks: &[LineProfilePeak]) {
         let n = data.len();
         if n < 2 { return; }
 
         painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 215));
 
-        let pad = egui::vec2(32.0, 8.0);
+        let pad = egui::vec2(36.0, 26.0);
         let plot = egui::Rect::from_min_max(
             rect.min + pad,
             rect.max - egui::vec2(8.0, 18.0),
@@ -1792,6 +1803,77 @@ impl PumpkinApp {
         // Profile line
         let pts: Vec<egui::Pos2> = (0..n).map(|i| egui::pos2(x_of(i), y_of(data[i]))).collect();
         painter.add(egui::Shape::line(pts, egui::Stroke::new(1.5, egui::Color32::from_rgb(100, 210, 255))));
+
+        if peaks.is_empty() {
+            return;
+        }
+
+        let peak_color = egui::Color32::from_rgb(255, 200, 50);
+        let gap_color = egui::Color32::from_rgb(230, 230, 230);
+        let marker_stroke = egui::Stroke::new(1.0, peak_color);
+        for peak in peaks {
+            let x = x_of(peak.index);
+            painter.line_segment([egui::pos2(x, plot.top()), egui::pos2(x, plot.bottom())], marker_stroke);
+            painter.circle_filled(egui::pos2(x, y_of(data[peak.index])), 3.0, peak_color);
+        }
+
+        for pair in peaks.windows(2) {
+            let a = &pair[0];
+            let b = &pair[1];
+            let (Some(da), Some(db)) = (a.d_spacing, b.d_spacing) else {
+                continue;
+            };
+            let x0 = x_of(a.index);
+            let x1 = x_of(b.index);
+            if x1 - x0 < 28.0 {
+                continue;
+            }
+            let y = plot.top() + 10.0;
+            let stroke = egui::Stroke::new(1.0, gap_color);
+            painter.line_segment([egui::pos2(x0, y), egui::pos2(x1, y)], stroke);
+            painter.line_segment([egui::pos2(x0, y - 3.0), egui::pos2(x0, y + 3.0)], stroke);
+            painter.line_segment([egui::pos2(x1, y - 3.0), egui::pos2(x1, y + 3.0)], stroke);
+            painter.text(
+                egui::pos2((x0 + x1) * 0.5, y - 3.0),
+                egui::Align2::CENTER_BOTTOM,
+                format!("Δd {:.3} Å", (db - da).abs()),
+                egui::FontId::monospace(9.0),
+                gap_color,
+            );
+        }
+    }
+
+    fn line_profile_peaks(
+        frame: &Frame,
+        start: egui::Pos2,
+        end: egui::Pos2,
+        data: &[f32],
+    ) -> Vec<LineProfilePeak> {
+        let indices = detect_line_profile_peaks(data);
+        if indices.is_empty() {
+            return Vec::new();
+        }
+
+        let dx = end.x - start.x;
+        let dy = end.y - start.y;
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1.0 {
+            return Vec::new();
+        }
+        let ux = dx / len;
+        let uy = dy / len;
+
+        indices
+            .into_iter()
+            .map(|index| {
+                let x = start.x + ux * index as f32;
+                let y = start.y + uy * index as f32;
+                LineProfilePeak {
+                    index,
+                    d_spacing: viewport::pixel_to_resolution(x as f64, y as f64, frame),
+                }
+            })
+            .collect()
     }
 
     fn compute_line_profile(frame: &Frame, start: egui::Pos2, end: egui::Pos2, width: u32) -> Vec<f32> {
@@ -2199,6 +2281,60 @@ fn elide_middle(value: &str, max_chars: usize) -> String {
     format!("{prefix}...{suffix}")
 }
 
+fn detect_line_profile_peaks(data: &[f32]) -> Vec<usize> {
+    const MAX_PEAKS: usize = 12;
+    if data.len() < 3 {
+        return Vec::new();
+    }
+
+    let min_v = data.iter().copied().fold(f32::INFINITY, f32::min);
+    let max_v = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let range = max_v - min_v;
+    if !range.is_finite() || range <= 0.0 {
+        return Vec::new();
+    }
+
+    let min_prominence = range * 0.08;
+    let threshold = min_v + range * 0.15;
+    let min_distance = (data.len() / 100).clamp(3, 20);
+    let mut candidates = Vec::<(usize, f32)>::new();
+
+    for i in 1..data.len() - 1 {
+        let value = data[i];
+        if value < threshold || value <= data[i - 1] || value < data[i + 1] {
+            continue;
+        }
+        let left = data[i.saturating_sub(min_distance)..i]
+            .iter()
+            .copied()
+            .fold(value, f32::min);
+        let right = data[i + 1..=(i + min_distance).min(data.len() - 1)]
+            .iter()
+            .copied()
+            .fold(value, f32::min);
+        let prominence = value - left.max(right);
+        if prominence >= min_prominence {
+            candidates.push((i, value));
+        }
+    }
+
+    candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut selected = Vec::<usize>::new();
+    for (idx, _) in candidates {
+        if selected
+            .iter()
+            .all(|&existing| existing.abs_diff(idx) >= min_distance)
+        {
+            selected.push(idx);
+            if selected.len() == MAX_PEAKS {
+                break;
+            }
+        }
+    }
+    selected.sort_unstable();
+    selected
+}
+
 /// Compute vmin as the 1st percentile and vmax as 10% of the maximum
 /// non-saturated pixel value.
 fn auto_contrast(frame: &Frame) -> (f32, f32) {
@@ -2224,4 +2360,24 @@ fn auto_contrast(frame: &Frame) -> (f32, f32) {
         vmax,
     );
     (p01 as f32, vmax)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_spaced_line_profile_peaks() {
+        let mut data = vec![10.0; 80];
+        data[18] = 100.0;
+        data[42] = 140.0;
+        data[65] = 120.0;
+
+        assert_eq!(detect_line_profile_peaks(&data), vec![18, 42, 65]);
+    }
+
+    #[test]
+    fn ignores_flat_line_profiles() {
+        assert!(detect_line_profile_peaks(&[5.0; 32]).is_empty());
+    }
 }
