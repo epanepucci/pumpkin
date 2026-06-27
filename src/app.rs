@@ -463,9 +463,11 @@ impl PumpkinApp {
             return;
         }
 
+        let mut open = true;
         egui::Window::new("Go to frame")
             .collapsible(false)
             .resizable(false)
+            .open(&mut open)
             .show(ctx, |ui| {
                 ui.label("Frame number:");
 
@@ -497,6 +499,8 @@ impl PumpkinApp {
                     }
                 });
             });
+        // X button sets open=false; buttons/keys set show_goto_frame=false; both close the dialog.
+        self.show_goto_frame = self.show_goto_frame && open;
     }
 
     fn do_goto_frame(&mut self, frame: usize) {
@@ -518,9 +522,11 @@ impl PumpkinApp {
             return;
         }
 
+        let mut open = self.show_help;
         egui::Window::new("Help")
             .collapsible(false)
             .resizable(false)
+            .open(&mut open)
             .show(ctx, |ui| {
                 ui.heading("Keyboard Shortcuts");
                 egui::Grid::new("help_grid").num_columns(2).spacing([20.0, 8.0]).show(ui, |ui| {
@@ -538,13 +544,12 @@ impl PumpkinApp {
                 ui.add_space(10.0);
                 ui.separator();
                 ui.label(format!("Pumpkin v{}", env!("APP_VERSION")));
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Close").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        self.show_help = false;
-                    }
-                });
             });
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            open = false;
+        }
+        self.show_help = open;
     }
 
     fn show_actions_window(&mut self, ctx: &Context) {
@@ -552,8 +557,7 @@ impl PumpkinApp {
             return;
         }
 
-        let mut open = true;
-        let mut close_clicked = false;
+        let mut open = self.show_actions;
         egui::Window::new("Actions")
             .collapsible(false)
             .resizable(false)
@@ -562,7 +566,6 @@ impl PumpkinApp {
                 ui.heading("Open file");
                 ui.horizontal(|ui| {
                     if ui.button("Open HDF5…").on_hover_text("Open HDF5 master file (Ctrl+O)").clicked() {
-                        close_clicked = true;
                         self.open_hdf5_dialog();
                     }
                     let save_enabled = self.frame.is_some();
@@ -570,7 +573,6 @@ impl PumpkinApp {
                         .on_hover_text("Save current image with overlays as PNG")
                         .clicked()
                     {
-                        close_clicked = true;
                         self.save_png();
                     }
                 });
@@ -649,13 +651,11 @@ impl PumpkinApp {
                     );
                     ui.end_row();
                 });
-
-                ui.add_space(8.0);
-                if ui.button("Close").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    close_clicked = true;
-                }
             });
-        self.show_actions = open && !close_clicked;
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            open = false;
+        }
+        self.show_actions = open;
     }
 
     fn set_commands_file_enabled(&mut self, enabled: bool) {
