@@ -148,6 +148,12 @@ pub struct PumpkinApp {
     dozor_data: Option<crate::dozor::DozorData>,
     dozor_collapsed: bool,
 
+    // Line profile (right-button drag)
+    line_profile_start: Option<egui::Pos2>,  // image-space
+    line_profile_end: Option<egui::Pos2>,    // image-space
+    line_profile_data: Vec<f32>,
+    line_profile_width: u32,
+
     remote_rx: tokio::sync::mpsc::UnboundedReceiver<crate::remote::RemoteCmd>,
     commands_file_enabled: bool,
     commands_file_path: String,
@@ -267,6 +273,10 @@ impl PumpkinApp {
             data_browser: data_browser_cfg.map(crate::data_browser::DataBrowser::new),
             dozor_data: None,
             dozor_collapsed: false,
+            line_profile_start: None,
+            line_profile_end: None,
+            line_profile_data: Vec::new(),
+            line_profile_width: 3,
             remote_rx,
             commands_file_enabled: false,
             commands_file_path: commands_file
@@ -655,6 +665,14 @@ impl PumpkinApp {
                             .step_by(0.001)
                             .fixed_decimals(3),
                     );
+                    ui.end_row();
+                });
+
+                ui.add_space(8.0);
+                ui.heading("Line profile");
+                egui::Grid::new("line_profile_grid").num_columns(2).show(ui, |ui| {
+                    ui.label("Width");
+                    ui.add(egui::DragValue::new(&mut self.line_profile_width).range(1u32..=200).suffix(" px"));
                     ui.end_row();
                 });
             });
@@ -1364,6 +1382,26 @@ impl PumpkinApp {
             }
         }
 
+        // Right-button drag: start or update the line profile.
+        if response.drag_started_by(egui::PointerButton::Secondary) {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let img = self.view.screen_to_image(pos, available.min);
+                self.line_profile_start = Some(img);
+                self.line_profile_end = Some(img);
+                self.line_profile_data.clear();
+            }
+        }
+        if response.dragged_by(egui::PointerButton::Secondary) {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let img = self.view.screen_to_image(pos, available.min);
+                self.line_profile_end = Some(img);
+                if let Some(start) = self.line_profile_start {
+                    let profile = Self::compute_line_profile(frame, start, img, self.line_profile_width);
+                    self.line_profile_data = profile;
+                }
+            }
+        }
+
         let prefetched_id = if !self.on_demand_active {
             self.monitor_prefetcher
                 .get(self.monitor_frame_index)
@@ -1564,6 +1602,44 @@ impl PumpkinApp {
             }
         }
 
+        // Line profile overlay: draw the line and integration band on the viewport.
+        if let (Some(start), Some(end)) = (self.line_profile_start, self.line_profile_end) {
+            let ss = self.view.image_to_screen(start, available.min);
+            let se = self.view.image_to_screen(end, available.min);
+            let dx = se.x - ss.x;
+            let dy = se.y - ss.y;
+            let len = (dx * dx + dy * dy).sqrt();
+            if len > 0.5 {
+                let nx = -dy / len;
+                let ny = dx / len;
+                let half_w = self.line_profile_width as f32 * self.view.zoom * 0.5;
+                let amber = egui::Color32::from_rgba_unmultiplied(255, 200, 0, 220);
+                let amber_fill = egui::Color32::from_rgba_unmultiplied(255, 200, 0, 45);
+                let amber_edge = egui::Color32::from_rgba_unmultiplied(255, 200, 0, 150);
+
+                if self.line_profile_width > 1 {
+                    let pts = vec![
+                        egui::pos2(ss.x + nx * half_w, ss.y + ny * half_w),
+                        egui::pos2(ss.x - nx * half_w, ss.y - ny * half_w),
+                        egui::pos2(se.x - nx * half_w, se.y - ny * half_w),
+                        egui::pos2(se.x + nx * half_w, se.y + ny * half_w),
+                    ];
+                    painter.add(egui::Shape::convex_polygon(pts, amber_fill, egui::Stroke::new(0.8, amber_edge)));
+                }
+
+                painter.line_segment([ss, se], egui::Stroke::new(1.5, amber));
+                painter.circle_filled(ss, 3.5, amber);
+                painter.circle_filled(se, 3.5, amber);
+
+                // Distance label near the end point.
+                let dist_px = ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt();
+                let label = format!("{dist_px:.0} px");
+                let lpos = egui::pos2(se.x + 6.0, se.y - 12.0);
+                painter.text(lpos, egui::Align2::LEFT_BOTTOM, label,
+                    egui::FontId::proportional(11.0), amber);
+            }
+        }
+
         // Dozor toggle button — shown whenever dozor data is loaded.
         if self.dozor_data.is_some() {
             let label = if self.dozor_collapsed { "▲ Dozor" } else { "▼ Dozor" };
@@ -1631,6 +1707,124 @@ impl PumpkinApp {
             self.hdf5_frame_index = number;
             self.load_hdf5_grouped(number);
         }
+    }
+
+    fn show_line_profile_window(&mut self, ctx: &Context) {
+        if self.line_profile_data.is_empty() {
+            return;
+        }
+        let data = self.line_profile_data.clone();
+        let mut open = true;
+        egui::Window::new("Line Profile")
+            .resizable(true)
+            .default_size([480.0, 180.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                let size = ui.available_size();
+                let (resp, painter) = ui.allocate_painter(size, egui::Sense::hover());
+                Self::draw_line_profile(&painter, resp.rect, &data);
+            });
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            open = false;
+        }
+        if !open {
+            self.line_profile_data.clear();
+            self.line_profile_start = None;
+            self.line_profile_end = None;
+        }
+    }
+
+    fn draw_line_profile(painter: &egui::Painter, rect: egui::Rect, data: &[f32]) {
+        let n = data.len();
+        if n < 2 { return; }
+
+        painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 215));
+
+        let pad = egui::vec2(32.0, 8.0);
+        let plot = egui::Rect::from_min_max(
+            rect.min + pad,
+            rect.max - egui::vec2(8.0, 18.0),
+        );
+        if plot.width() < 8.0 || plot.height() < 8.0 { return; }
+
+        let min_v = data.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max_v = data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let range = (max_v - min_v).max(1.0);
+
+        let x_of = |i: usize| plot.left() + (i as f32 / (n - 1) as f32) * plot.width();
+        let y_of = |v: f32| plot.bottom() - ((v - min_v) / range) * plot.height();
+
+        // Axes
+        let axis_color = egui::Color32::from_rgba_unmultiplied(180, 180, 180, 200);
+        let axis_stroke = egui::Stroke::new(1.0, axis_color);
+        painter.line_segment([plot.left_bottom(), plot.right_bottom()], axis_stroke);
+        painter.line_segment([plot.left_bottom(), plot.left_top()], axis_stroke);
+
+        // Y-axis labels
+        let font = egui::FontId::monospace(9.0);
+        let label_color = egui::Color32::from_rgba_unmultiplied(180, 180, 180, 220);
+        for (val, label) in [(max_v, format!("{max_v:.0}")), (min_v, format!("{min_v:.0}"))] {
+            painter.text(
+                egui::pos2(plot.left() - 2.0, y_of(val)),
+                egui::Align2::RIGHT_CENTER,
+                label,
+                font.clone(),
+                label_color,
+            );
+        }
+
+        // X-axis labels (start and end distance)
+        painter.text(
+            egui::pos2(plot.left(), plot.bottom() + 2.0),
+            egui::Align2::LEFT_TOP,
+            "0",
+            font.clone(),
+            label_color,
+        );
+        painter.text(
+            egui::pos2(plot.right(), plot.bottom() + 2.0),
+            egui::Align2::RIGHT_TOP,
+            format!("{} px", n - 1),
+            font.clone(),
+            label_color,
+        );
+
+        // Profile line
+        let pts: Vec<egui::Pos2> = (0..n).map(|i| egui::pos2(x_of(i), y_of(data[i]))).collect();
+        painter.add(egui::Shape::line(pts, egui::Stroke::new(1.5, egui::Color32::from_rgb(100, 210, 255))));
+    }
+
+    fn compute_line_profile(frame: &Frame, start: egui::Pos2, end: egui::Pos2, width: u32) -> Vec<f32> {
+        let dx = (end.x - start.x) as f64;
+        let dy = (end.y - start.y) as f64;
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1.0 {
+            return vec![];
+        }
+        let steps = len as usize + 1;
+        let tx = dx / len;
+        let ty = dy / len;
+        // Perpendicular direction for orthogonal sampling.
+        let nx = -ty;
+        let ny = tx;
+        let half = width as i64 / 2;
+
+        let mut profile = vec![0.0f32; steps];
+        for (step, val) in profile.iter_mut().enumerate() {
+            let cx = start.x as f64 + tx * step as f64;
+            let cy = start.y as f64 + ty * step as f64;
+            let mut sum = 0.0f32;
+            for w in 0..width as i64 {
+                let offset = w - half;
+                let qx = (cx + offset as f64 * nx).round() as i64;
+                let qy = (cy + offset as f64 * ny).round() as i64;
+                if qx >= 0 && qy >= 0 && qx < frame.width as i64 && qy < frame.height as i64 {
+                    sum += frame.pixels[(qy as u32 * frame.width + qx as u32) as usize] as f32;
+                }
+            }
+            *val = sum;
+        }
+        profile
     }
 
     fn draw_series_name_overlay(&self, ui: &Ui, viewport: egui::Rect, frame: &Frame) {
@@ -1710,6 +1904,7 @@ impl eframe::App for PumpkinApp {
         }
 
         self.show_actions_window(ctx);
+        self.show_line_profile_window(ctx);
 
         if ctx.input_mut(|i| i.consume_shortcut(&goto_shortcut)) {
             self.show_help = false;
