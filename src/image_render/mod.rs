@@ -185,6 +185,18 @@ impl ImageTexture {
 
 // --- Tone mapping ---
 
+/// Compute the rendered RGB for a single pixel value using the same mapping as `tone_map`.
+pub(crate) fn pixel_to_rgb(value: u16, vmin: f32, vmax: f32, gamma_correction: f32, saturation: u16, colormap: Colormap) -> [u8; 3] {
+    if value >= saturation {
+        return [0, 0, 0];
+    }
+    let range = (vmax - vmin).max(1.0);
+    let t = ((value as f32 - vmin) / range).clamp(0.0, 1.0);
+    let [r, g, b] = apply_colormap(t, colormap);
+    let att = |c: u8| -> u8 { ((c as f32 / 255.0).powf(gamma_correction) * 255.0).round() as u8 };
+    [att(r), att(g), att(b)]
+}
+
 pub(crate) fn tone_map(
     pixels: &[u16],
     _w: u32,

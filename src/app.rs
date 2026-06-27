@@ -1519,20 +1519,28 @@ impl PumpkinApp {
                     painter.rect_stroke(loupe_rect, 2.0, egui::Stroke::new(1.5, egui::Color32::WHITE), egui::StrokeKind::Outside);
 
                     // Pixel value labels — one per source pixel, centered in its cell.
+                    // Label colour is chosen for contrast against the rendered pixel colour.
                     let uv_w = uv.width();
                     let uv_h = uv.height();
                     let label_font = egui::FontId::monospace(7.0);
+                    let sat = frame.saturation_value;
                     for spy in src_y0..src_y1 {
                         for spx in src_x0..src_x1 {
                             let value = frame.pixels[(spy as u32 * frame.width + spx as u32) as usize];
                             let screen_x = loupe_origin.x + ((spx as f32 + 0.5) / fw - uv.min.x) / uv_w * LOUPE_PX;
                             let screen_y = loupe_origin.y + ((spy as f32 + 0.5) / fh - uv.min.y) / uv_h * LOUPE_PX;
+                            let [r, g, b] = crate::image_render::pixel_to_rgb(
+                                value, self.contrast.vmin, self.contrast.vmax,
+                                self.contrast.gamma_correction, sat, self.contrast.colormap,
+                            );
+                            let lum = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+                            let label_color = if lum > 140.0 { egui::Color32::BLACK } else { egui::Color32::WHITE };
                             painter.text(
                                 egui::pos2(screen_x, screen_y),
                                 egui::Align2::CENTER_CENTER,
                                 value.to_string(),
                                 label_font.clone(),
-                                egui::Color32::WHITE,
+                                label_color,
                             );
                         }
                     }
