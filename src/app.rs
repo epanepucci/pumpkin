@@ -121,6 +121,7 @@ pub struct PumpkinApp {
     // goto a given frame by number
     show_goto_frame: bool,
     goto_frame_input: String,
+    goto_frame_needs_focus: bool,
 
     auto_region: bool,
     lock_zoom: bool,
@@ -248,6 +249,7 @@ impl PumpkinApp {
             histogram_cache: None,
             show_goto_frame: false,
             goto_frame_input: "0".to_string(),
+            goto_frame_needs_focus: false,
             auto_region: false,
             lock_zoom: true,
             zoom_speed: 0.006,
@@ -473,7 +475,11 @@ impl PumpkinApp {
 
                 let response = ui.text_edit_singleline(&mut self.goto_frame_input);
 
-                // Auto-focus when opened
+                if self.goto_frame_needs_focus {
+                    response.request_focus();
+                    self.goto_frame_needs_focus = false;
+                }
+
                 if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     if let Ok(frame) = self.goto_frame_input.parse::<usize>() {
                         self.do_goto_frame(frame);
@@ -481,7 +487,7 @@ impl PumpkinApp {
                     self.show_goto_frame = false;
                 }
 
-                // ESC cancels
+                // Esc cancels
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     self.show_goto_frame = false;
                 }
@@ -1708,6 +1714,7 @@ impl eframe::App for PumpkinApp {
         if ctx.input_mut(|i| i.consume_shortcut(&goto_shortcut)) {
             self.show_help = false;
             self.show_goto_frame = true;
+            self.goto_frame_needs_focus = true;
             self.goto_frame_input.clear();
         }
 
