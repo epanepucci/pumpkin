@@ -153,6 +153,7 @@ impl ImageTexture {
         if needs_update {
             let rgba = tone_map(
                 &frame.pixels,
+                frame.pixel_mask.as_deref(),
                 frame.width,
                 frame.height,
                 vmin,
@@ -199,6 +200,7 @@ pub(crate) fn pixel_to_rgb(value: u16, vmin: f32, vmax: f32, gamma_correction: f
 
 pub(crate) fn tone_map(
     pixels: &[u16],
+    pixel_mask: Option<&[u8]>,
     _w: u32,
     _h: u32,
     vmin: f32,
@@ -210,8 +212,9 @@ pub(crate) fn tone_map(
     let range = (vmax - vmin).max(1.0);
     let mut rgba = vec![0u8; pixels.len() * 4];
 
-    rgba.par_chunks_mut(4).zip(pixels.par_iter()).for_each(|(chunk, &v)| {
-        if v >= saturation {
+    rgba.par_chunks_mut(4).enumerate().for_each(|(i, chunk)| {
+        let v = pixels[i];
+        if pixel_mask.and_then(|mask| mask.get(i)).is_some_and(|&m| m != 0) || v >= saturation {
             chunk.copy_from_slice(&[0, 0, 0, 255]);
         } else {
             let t = ((v as f32 - vmin) / range).clamp(0.0, 1.0);

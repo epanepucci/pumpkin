@@ -413,6 +413,7 @@ impl PumpkinApp {
             let mut width = 0u32;
             let mut height = 0u32;
             let mut metadata = series.series_metadata.clone();
+            let mut pixel_mask: Option<Arc<[u8]>> = None;
 
             for idx in start_index..end {
                 match series.load_frame(idx) {
@@ -421,12 +422,17 @@ impl PumpkinApp {
                         height = frame.height;
                         if idx == start_index {
                             metadata = frame.metadata.clone();
+                            pixel_mask = frame.pixel_mask.clone();
                         }
                         match acc {
-                            None => acc = Some(frame.pixels.iter().map(|&v| v as u32).collect()),
+                            None => acc = Some(frame.pixels.iter().enumerate()
+                                .map(|(i, &v)| if frame.is_masked_index(i) { 0 } else { v as u32 })
+                                .collect()),
                             Some(ref mut a) => {
-                                for (s, &v) in a.iter_mut().zip(frame.pixels.iter()) {
-                                    *s += v as u32;
+                                for (i, (s, &v)) in a.iter_mut().zip(frame.pixels.iter()).enumerate() {
+                                    if !frame.is_masked_index(i) {
+                                        *s += v as u32;
+                                    }
                                 }
                             }
                         }
@@ -434,13 +440,13 @@ impl PumpkinApp {
                     Err(e) => eprintln!("HDF5 grouped frame {idx}: {e:#}"),
                 }
             }
-            acc.map(|a| (a, width, height, metadata))
+            acc.map(|a| (a, width, height, metadata, pixel_mask))
         };
 
-        if let Some((acc, width, height, metadata)) = grouped {
+        if let Some((acc, width, height, metadata, pixel_mask)) = grouped {
             let effective_sat = self.effective_saturation();
             let pixels: Vec<u16> = acc.iter().map(|&s| s.min(effective_sat as u32) as u16).collect();
-            let frame = Frame { pixels, width, height, saturation_value: effective_sat, metadata };
+            let frame = Frame { pixels, pixel_mask, width, height, saturation_value: effective_sat, metadata };
             self.on_new_frame(Arc::new(frame));
         }
         // Don't prefetch individual frames in grouped mode — they would overwrite
@@ -1193,8 +1199,8 @@ impl PumpkinApp {
                     .is_some_and(|(p, s, n, _)| *p == frame_ptr && *s == sat && *n == n_bins);
                 if !cache_valid {
                     let mut counts = vec![0u32; n_bins];
-                    for &v in &frame.pixels {
-                        if v < sat {
+                    for (i, &v) in frame.pixels.iter().enumerate() {
+                        if !frame.is_masked_index(i) && v < sat {
                             let bin = ((v as usize * n_bins) / sat as usize).min(n_bins - 1);
                             counts[bin] += 1;
                         }
@@ -1472,39 +1478,42 @@ impl PumpkinApp {
             let ix = img_pos.x as i64;
             let iy = img_pos.y as i64;
             if ix >= 0 && iy >= 0 && ix < frame.width as i64 && iy < frame.height as i64 {
-                let value = frame.pixels[(iy as u32 * frame.width + ix as u32) as usize];
-                let resolution = viewport::pixel_to_resolution(ix as f64, iy as f64, frame);
+                let pixel_index = (iy as u32 * frame.width + ix as u32) as usize;
+                if !frame.is_masked_index(pixel_index) {
+                    let value = frame.pixels[pixel_index];
+                    let resolution = viewport::pixel_to_resolution(ix as f64, iy as f64, frame);
 
-                let line1 = format!("x={ix}  y={iy}  ={value}");
-                let line2 = resolution.map(|d| format!("d = {d:.2} Å"));
+                    let line1 = format!("x={ix}  y={iy}  ={value}");
+                    let line2 = resolution.map(|d| format!("d = {d:.2} Å"));
 
-                let font = egui::FontId::monospace(12.0);
-                let color = egui::Color32::WHITE;
-                let padding = egui::vec2(6.0, 4.0);
-                let line_gap = 2.0;
+                    let font = egui::FontId::monospace(12.0);
+                    let color = egui::Color32::WHITE;
+                    let padding = egui::vec2(6.0, 4.0);
+                    let line_gap = 2.0;
 
-                let g1 = painter.layout_no_wrap(line1, font.clone(), color);
-                let g2 = line2.as_deref().map(|s| painter.layout_no_wrap(s.to_string(), font.clone(), color));
+                    let g1 = painter.layout_no_wrap(line1, font.clone(), color);
+                    let g2 = line2.as_deref().map(|s| painter.layout_no_wrap(s.to_string(), font.clone(), color));
 
-                let text_w = g2.as_ref().map_or(g1.size().x, |g| g1.size().x.max(g.size().x));
-                let text_h = g1.size().y + g2.as_ref().map_or(0.0, |g| line_gap + g.size().y);
-                let box_size = egui::vec2(text_w + padding.x * 2.0, text_h + padding.y * 2.0);
+                    let text_w = g2.as_ref().map_or(g1.size().x, |g| g1.size().x.max(g.size().x));
+                    let text_h = g1.size().y + g2.as_ref().map_or(0.0, |g| line_gap + g.size().y);
+                    let box_size = egui::vec2(text_w + padding.x * 2.0, text_h + padding.y * 2.0);
 
-                // Position at cursor + offset, clamped so the box stays inside the viewport.
-                let offset = self.overlays.hover_tooltip_offset;
-                let origin = egui::pos2(
-                    (hover.x + offset.x).min(available.right()  - box_size.x - 2.0),
-                    (hover.y + offset.y).min(available.bottom() - box_size.y - 2.0),
-                );
-                let bg_rect = egui::Rect::from_min_size(origin, box_size);
-                tooltip_rect = Some(bg_rect);
+                    // Position at cursor + offset, clamped so the box stays inside the viewport.
+                    let offset = self.overlays.hover_tooltip_offset;
+                    let origin = egui::pos2(
+                        (hover.x + offset.x).min(available.right()  - box_size.x - 2.0),
+                        (hover.y + offset.y).min(available.bottom() - box_size.y - 2.0),
+                    );
+                    let bg_rect = egui::Rect::from_min_size(origin, box_size);
+                    tooltip_rect = Some(bg_rect);
 
-                painter.rect_filled(bg_rect, 3.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180));
-                let text_origin = origin + padding;
-                let g1_h = g1.size().y;
-                painter.galley(text_origin, g1, color);
-                if let Some(g) = g2 {
-                    painter.galley(text_origin + egui::vec2(0.0, g1_h + line_gap), g, color);
+                    painter.rect_filled(bg_rect, 3.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180));
+                    let text_origin = origin + padding;
+                    let g1_h = g1.size().y;
+                    painter.galley(text_origin, g1, color);
+                    if let Some(g) = g2 {
+                        painter.galley(text_origin + egui::vec2(0.0, g1_h + line_gap), g, color);
+                    }
                 }
             }
         }
@@ -1575,7 +1584,11 @@ impl PumpkinApp {
                     let sat = frame.saturation_value;
                     for spy in src_y0..src_y1 {
                         for spx in src_x0..src_x1 {
-                            let value = frame.pixels[(spy as u32 * frame.width + spx as u32) as usize];
+                            let pixel_index = (spy as u32 * frame.width + spx as u32) as usize;
+                            if frame.is_masked_index(pixel_index) {
+                                continue;
+                            }
+                            let value = frame.pixels[pixel_index];
                             let screen_x = loupe_origin.x + ((spx as f32 + 0.5) / fw - uv.min.x) / uv_w * LOUPE_PX;
                             let screen_y = loupe_origin.y + ((spy as f32 + 0.5) / fh - uv.min.y) / uv_h * LOUPE_PX;
                             let [r, g, b] = crate::image_render::pixel_to_rgb(
@@ -1901,7 +1914,10 @@ impl PumpkinApp {
                 let qx = (cx + offset as f64 * nx).round() as i64;
                 let qy = (cy + offset as f64 * ny).round() as i64;
                 if qx >= 0 && qy >= 0 && qx < frame.width as i64 && qy < frame.height as i64 {
-                    sum += frame.pixels[(qy as u32 * frame.width + qx as u32) as usize] as f32;
+                    let pixel_index = (qy as u32 * frame.width + qx as u32) as usize;
+                    if !frame.is_masked_index(pixel_index) {
+                        sum += frame.pixels[pixel_index] as f32;
+                    }
                 }
             }
             *val = sum;
@@ -2237,8 +2253,13 @@ fn auto_contrast_region(frame: &Frame, view: &ViewState, viewport: egui::Rect) -
 
     let sat = frame.saturation_value;
     let mut vals: Vec<u16> = (y0..y1)
-        .flat_map(|y| (x0..x1).map(move |x| frame.pixels[(y * frame.width + x) as usize]))
-        .filter(|&v| v < sat)
+        .flat_map(|y| {
+            (x0..x1).filter_map(move |x| {
+                let pixel_index = (y * frame.width + x) as usize;
+                let value = frame.pixels[pixel_index];
+                (!frame.is_masked_index(pixel_index) && value < sat).then_some(value)
+            })
+        })
         .collect();
 
     if vals.is_empty() {
@@ -2341,7 +2362,9 @@ fn auto_contrast(frame: &Frame) -> (f32, f32) {
     if frame.pixels.is_empty() {
         return (0.0, 65535.0);
     }
-    let mut vals: Vec<u16> = frame.pixels.iter().copied().filter(|&v| v < frame.saturation_value).collect();
+    let mut vals: Vec<u16> = frame.pixels.iter().enumerate()
+        .filter_map(|(i, &v)| (!frame.is_masked_index(i) && v < frame.saturation_value).then_some(v))
+        .collect();
 
     if vals.is_empty() {
         return (0.0, frame.saturation_value as f32);

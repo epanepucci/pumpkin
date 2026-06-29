@@ -38,7 +38,7 @@ pub fn export_png(
     let w = frame.width;
     let h = frame.height;
 
-    let mut rgba = tone_map(&frame.pixels, w, h, vmin, vmax, gamma_correction, saturation, colormap);
+    let mut rgba = tone_map(&frame.pixels, frame.pixel_mask.as_deref(), w, h, vmin, vmax, gamma_correction, saturation, colormap);
 
     if overlays.show_beam_center {
         if let (Some(cx), Some(cy)) = (frame.metadata.beam_center_x, frame.metadata.beam_center_y) {

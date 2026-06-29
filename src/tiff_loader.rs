@@ -31,7 +31,7 @@ pub fn decode_tiff(data: &[u8]) -> Result<Frame> {
     // Skip DECTRIS private metadata parsing for now.
     let metadata = Default::default();
 
-    Ok(Frame { pixels, width, height, saturation_value, metadata })
+    Ok(Frame { pixels, pixel_mask: None, width, height, saturation_value, metadata })
 }
 
 #[cfg(test)]

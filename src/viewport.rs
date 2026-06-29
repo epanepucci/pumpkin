@@ -233,7 +233,11 @@ fn draw_pixel_values(painter: &Painter, view: &ViewState, viewport: Rect, frame:
 
     for py in y0..y1 {
         for px in x0..x1 {
-            let value = frame.pixels[(py * frame.width + px) as usize];
+            let pixel_index = (py * frame.width + px) as usize;
+            if frame.is_masked_index(pixel_index) {
+                continue;
+            }
+            let value = frame.pixels[pixel_index];
             let cell_center = view.image_to_screen(Pos2::new(px as f32 + 0.5, py as f32 + 0.5), origin);
             if !viewport.contains(cell_center) {
                 continue;

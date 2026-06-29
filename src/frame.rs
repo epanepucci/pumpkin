@@ -1,8 +1,12 @@
+use std::sync::Arc;
+
 /// A decoded image frame with pixel data and experiment metadata.
 #[derive(Clone)]
 pub struct Frame {
     /// Raw pixel values, row-major, u16 per pixel.
     pub pixels: Vec<u16>,
+    /// Optional row-major detector mask. Non-zero values mark pixels with no data.
+    pub pixel_mask: Option<Arc<[u8]>>,
     pub width: u32,
     pub height: u32,
 
@@ -52,6 +56,14 @@ pub struct FrameMetadata {
 }
 
 impl Frame {
+    /// Returns true if the pixel at `index` is masked out by detector metadata.
+    pub fn is_masked_index(&self, index: usize) -> bool {
+        self.pixel_mask
+            .as_ref()
+            .and_then(|mask| mask.get(index))
+            .is_some_and(|&v| v != 0)
+    }
+
     /// Returns true if the given pixel value is at saturation.
     pub fn is_saturated(&self, value: u16) -> bool {
         value >= self.saturation_value

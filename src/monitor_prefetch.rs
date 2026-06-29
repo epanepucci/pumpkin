@@ -63,6 +63,7 @@ impl MonitorPrefetcher {
             rayon::spawn(move || {
                 let rgba = crate::image_render::tone_map(
                     &frame.pixels,
+                    frame.pixel_mask.as_deref(),
                     frame.width,
                     frame.height,
                     vmin,

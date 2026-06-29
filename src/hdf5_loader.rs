@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use hdf5_metno as hdf5;
 use ndarray::s;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::frame::{Frame, FrameMetadata};
 
@@ -16,6 +17,8 @@ pub struct Hdf5Series {
     /// Number of frames stored per data file.
     frames_per_file: usize,
     pub saturation_value: u16,
+    pixel_mask: Option<Arc<[u8]>>,
+    pixel_mask_shape: Option<(u32, u32)>,
     /// Metadata that is the same for every frame in the series.
     pub series_metadata: FrameMetadata,
 }
@@ -99,11 +102,18 @@ impl Hdf5Series {
             shape[0]
         };
 
+        let (pixel_mask, pixel_mask_shape) = read_pixel_mask(&master)?;
+        if let Some(ref mask) = pixel_mask {
+            eprintln!("HDF5: loaded pixel_mask with {} masked pixels", mask.iter().filter(|&&v| v != 0).count());
+        }
+
         Ok(Self {
             master,
             total_frames,
             frames_per_file,
             saturation_value,
+            pixel_mask,
+            pixel_mask_shape,
             series_metadata,
         })
     }
@@ -128,6 +138,15 @@ impl Hdf5Series {
         let height = shape[1] as u32;
         let width = shape[2] as u32;
 
+        let pixel_mask = match (&self.pixel_mask, self.pixel_mask_shape) {
+            (Some(mask), Some((mask_w, mask_h))) if mask_w == width && mask_h == height => Some(mask.clone()),
+            (Some(_), Some((mask_w, mask_h))) => {
+                eprintln!("HDF5 frame {index}: ignoring pixel_mask shape {mask_w}x{mask_h}; frame is {width}x{height}");
+                None
+            }
+            _ => None,
+        };
+
         let pixels = read_pixels_auto(&ds, within_idx)
             .with_context(|| format!("Cannot read frame {index} from {ds_path}"))?;
 
@@ -139,8 +158,45 @@ impl Hdf5Series {
         let mut metadata = self.series_metadata.clone();
         metadata.image_number = Some(index as i64);
 
-        Ok(Frame { pixels, width, height, saturation_value: sat, metadata })
+        Ok(Frame { pixels, pixel_mask, width, height, saturation_value: sat, metadata })
     }
+}
+
+fn read_pixel_mask(file: &hdf5::File) -> Result<(Option<Arc<[u8]>>, Option<(u32, u32)>)> {
+    let path = "/entry/instrument/detector/detectorSpecific/pixel_mask";
+    let Ok(ds) = file.dataset(path) else {
+        return Ok((None, None));
+    };
+    let shape = ds.shape();
+    if shape.len() != 2 {
+        bail!("Expected 2D dataset in {path}, got {} dims", shape.len());
+    }
+    let height = shape[0] as u32;
+    let width = shape[1] as u32;
+    let mask = read_mask_auto(&ds).with_context(|| format!("Cannot read {path}"))?;
+    if mask.len() != (width * height) as usize {
+        bail!("Pixel mask count mismatch: got {}, expected {}x{}={}", mask.len(), width, height, width * height);
+    }
+    Ok((Some(Arc::from(mask)), Some((width, height))))
+}
+
+fn read_mask_auto(ds: &hdf5::Dataset) -> Result<Vec<u8>> {
+    if let Ok(arr) = ds.read_2d::<u8>() {
+        return Ok(arr.as_slice().context("array not contiguous")?.iter().map(|&v| u8::from(v != 0)).collect());
+    }
+    if let Ok(arr) = ds.read_2d::<u16>() {
+        return Ok(arr.as_slice().context("array not contiguous")?.iter().map(|&v| u8::from(v != 0)).collect());
+    }
+    if let Ok(arr) = ds.read_2d::<u32>() {
+        return Ok(arr.as_slice().context("array not contiguous")?.iter().map(|&v| u8::from(v != 0)).collect());
+    }
+    if let Ok(arr) = ds.read_2d::<i32>() {
+        return Ok(arr.as_slice().context("array not contiguous")?.iter().map(|&v| u8::from(v != 0)).collect());
+    }
+    if let Ok(arr) = ds.read_2d::<i16>() {
+        return Ok(arr.as_slice().context("array not contiguous")?.iter().map(|&v| u8::from(v != 0)).collect());
+    }
+    Err(anyhow::anyhow!("read failed as u8/u16/u32/i32/i16"))
 }
 
 /// Read one 2-D frame from a 3-D dataset, trying common DECTRIS pixel dtypes.
