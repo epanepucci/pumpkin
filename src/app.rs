@@ -1148,11 +1148,19 @@ impl PumpkinApp {
         let vmin_max = (self.contrast.vmax - 1.0).max(1.0);
         ui.add_enabled(
             !self.contrast.auto,
-            egui::Slider::new(&mut self.contrast.vmin, 0.0..=vmin_max).fixed_decimals(1).text("Background"),
+            egui::Slider::new(&mut self.contrast.vmin, 0.0..=vmin_max)
+                .logarithmic(true)
+                .smallest_positive(1.0)
+                .fixed_decimals(1)
+                .text("Background"),
         );
         ui.add_enabled(
             !self.contrast.auto,
-            egui::Slider::new(&mut self.contrast.vmax, self.contrast.vmin..=frame_max).fixed_decimals(1).text("Foreground"),
+            egui::Slider::new(&mut self.contrast.vmax, self.contrast.vmin..=frame_max)
+                .logarithmic(true)
+                .smallest_positive(1.0)
+                .fixed_decimals(1)
+                .text("Foreground"),
         );
         ui.add(
             egui::Slider::new(&mut self.contrast.gamma_correction, 1.0..=10.0)
