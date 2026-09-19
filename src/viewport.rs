@@ -93,11 +93,11 @@ impl ViewState {
 
 /// Handle pan and zoom input within the viewport rect. Returns true if view changed.
 /// `zoom_speed` scales scroll input before exponentiation (default 0.02).
-pub fn handle_input(view: &mut ViewState, response: &Response, frame: Option<&Arc<Frame>>, zoom_speed: f32) -> bool {
+pub fn handle_input(view: &mut ViewState, response: &Response, frame: Option<&Arc<Frame>>, zoom_speed: f32, pan: bool) -> bool {
     let mut changed = false;
 
     // Pan with left-button drag.
-    if response.dragged_by(egui::PointerButton::Primary) {
+    if pan && response.dragged_by(egui::PointerButton::Primary) {
         let delta = response.drag_delta();
         view.offset.x -= delta.x / view.zoom;
         view.offset.y -= delta.y / view.zoom;

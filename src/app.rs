@@ -569,6 +569,7 @@ impl PumpkinApp {
                     ui.label("Tab"); ui.label("Hide / show side panel"); ui.end_row();
                     ui.label("F11"); ui.label("Toggle fullscreen"); ui.end_row();
                     ui.label("?"); ui.label("Show this help"); ui.end_row();
+                    ui.label("Hold F + left-drag"); ui.label("Adjust contrast (Foreground)"); ui.end_row();
                 });
 
                 ui.add_space(10.0);
@@ -1389,8 +1390,24 @@ impl PumpkinApp {
             self.pending_fit = false;
         }
 
+        // Hold F and drag with the left button: adjust the Foreground (vmax) setting.
+        // Dragging right brightens the image (lower vmax), left darkens it.
+        let contrast_drag = ctx.input(|i| i.key_down(egui::Key::F))
+            && response.dragged_by(egui::PointerButton::Primary);
+        if contrast_drag {
+            const CONTRAST_DRAG_SPEED: f32 = 0.005; // log-units of vmax per pixel
+            let dx = response.drag_delta().x;
+            if dx != 0.0 {
+                let max = self.effective_saturation() as f32;
+                let min = self.contrast.vmin + AUTO_CONTRAST_MIN_SPAN;
+                self.contrast.auto = false;
+                self.contrast.vmax = (self.contrast.vmax * (-dx * CONTRAST_DRAG_SPEED).exp())
+                    .clamp(min, max.max(min));
+            }
+        }
+
         // Handle pan + zoom input.
-        let view_changed = viewport::handle_input(&mut self.view, &response, Some(frame), self.zoom_speed);
+        let view_changed = viewport::handle_input(&mut self.view, &response, Some(frame), self.zoom_speed, !contrast_drag);
         if view_changed {
             if self.connected {
                 self.last_interaction_time = Some(std::time::Instant::now());
