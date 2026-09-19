@@ -116,6 +116,10 @@ pub struct PumpkinApp {
     hdf5_frame_index: usize,
     /// Number of consecutive frames to sum before displaying.
     hdf5_grouping: usize,
+    /// Movie mode: auto-advance through the HDF5 series (never active in monitor mode).
+    movie_playing: bool,
+    movie_fps: f32,
+    movie_last_advance: std::time::Instant,
 
     saturation_override_enabled: bool,
     saturation_override_value: u16,
@@ -257,6 +261,9 @@ impl PumpkinApp {
             hdf5_master_path: None,
             hdf5_frame_index: 0,
             hdf5_grouping: 1,
+            movie_playing: false,
+            movie_fps: 10.0,
+            movie_last_advance: std::time::Instant::now(),
             saturation_override_enabled: true,
             saturation_override_value: 32767,
             file_saturation_value: None,
@@ -389,6 +396,26 @@ impl PumpkinApp {
             .and_then(|p| crate::dozor::load_dozor(&p));
         self.dozor_collapsed = false;
         Ok(())
+    }
+
+    /// Start or stop movie mode. Only available for an HDF5 series outside monitor mode.
+    /// Starting on the last group rewinds to the first frame.
+    fn toggle_movie(&mut self) {
+        if self.movie_playing {
+            self.movie_playing = false;
+            return;
+        }
+        let Some(total) = self.hdf5_series.as_ref().map(|s| s.total_frames) else { return };
+        if self.connected {
+            return;
+        }
+        let grouping = self.hdf5_grouping.max(1);
+        if self.hdf5_frame_index + grouping >= total && total > grouping {
+            self.hdf5_frame_index = 0;
+            self.load_hdf5_grouped(0);
+        }
+        self.movie_playing = true;
+        self.movie_last_advance = std::time::Instant::now();
     }
 
     /// Navigate to an HDF5 frame.
@@ -567,6 +594,7 @@ impl PumpkinApp {
                     ui.label("Ctrl+G"); ui.label("Go to frame number"); ui.end_row();
                     ui.label("Ctrl+Q"); ui.label("Quit"); ui.end_row();
                     ui.label("Tab"); ui.label("Hide / show side panel"); ui.end_row();
+                    ui.label("Ctrl+P"); ui.label("Play / stop movie (HDF5 only)"); ui.end_row();
                     ui.label("F11"); ui.label("Toggle fullscreen"); ui.end_row();
                     ui.label("?"); ui.label("Show this help"); ui.end_row();
                     ui.label("Hold F + left-drag"); ui.label("Adjust contrast (Foreground)"); ui.end_row();
@@ -842,6 +870,7 @@ impl PumpkinApp {
     }
 
     fn connect(&mut self) {
+        self.movie_playing = false;
         self.hdf5_series = None;
         self.hdf5_master_path = None;
         self.dozor_data = None;
@@ -1036,6 +1065,7 @@ impl PumpkinApp {
             });
 
             let old_index = self.hdf5_frame_index;
+            let mut toggle_movie = false;
 
             let mut group_idx = self.hdf5_frame_index / grouping;
             if ui.add(egui::Slider::new(&mut group_idx, 0..=n_groups.saturating_sub(1)).text("group")).changed() {
@@ -1056,10 +1086,22 @@ impl PumpkinApp {
                 if ui.add(egui::Button::new("▶|").min_size(btn_size)).on_hover_text("Last frame").clicked() {
                     self.hdf5_frame_index = (n_groups - 1) * grouping;
                 }
+                ui.separator();
+                let label = if self.movie_playing { "⏸ Stop" } else { "🎞 Movie" };
+                if ui.add_enabled(!self.connected, egui::Button::new(label))
+                    .on_hover_text("Play through the series (Ctrl+P)")
+                    .clicked()
+                {
+                    toggle_movie = true;
+                }
+                ui.add(egui::DragValue::new(&mut self.movie_fps).range(0.5..=60.0).speed(0.1).suffix(" fps"));
             });
 
             if self.hdf5_frame_index != old_index || self.hdf5_grouping != grouping {
                 self.load_hdf5_grouped(self.hdf5_frame_index);
+            }
+            if toggle_movie {
+                self.toggle_movie();
             }
         }
 
@@ -2007,6 +2049,15 @@ impl eframe::App for PumpkinApp {
         let panel_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Tab);
         let fullscreen_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F11);
         let save_png_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
+        let movie_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::P);
+
+        // Movie mode never runs against the live monitor or without an HDF5 series.
+        if self.movie_playing && (self.connected || self.hdf5_series.is_none()) {
+            self.movie_playing = false;
+        }
+        if ctx.input_mut(|i| i.consume_shortcut(&movie_shortcut)) {
+            self.toggle_movie();
+        }
 
         if ctx.input_mut(|i| i.consume_shortcut(&help_shortcut)) {
             self.show_help = !self.show_help;
@@ -2085,6 +2136,22 @@ impl eframe::App for PumpkinApp {
 
                 if ctx.input_mut(|i| i.consume_shortcut(&next_image_shortcut)) && self.hdf5_frame_index + grouping < total {
                     self.hdf5_frame_index += grouping;
+                }
+            }
+
+            if self.movie_playing {
+                let interval = std::time::Duration::from_secs_f32(1.0 / self.movie_fps.max(0.5));
+                let elapsed = self.movie_last_advance.elapsed();
+                if elapsed >= interval {
+                    if self.hdf5_frame_index + grouping < total {
+                        self.hdf5_frame_index += grouping;
+                        self.movie_last_advance = std::time::Instant::now();
+                    } else {
+                        self.movie_playing = false; // reached the end
+                    }
+                }
+                if self.movie_playing {
+                    ctx.request_repaint_after(interval.saturating_sub(self.movie_last_advance.elapsed()));
                 }
             }
 
