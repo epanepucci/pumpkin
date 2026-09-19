@@ -12,7 +12,7 @@ A desktop application for viewing X-ray diffraction images from DECTRIS EIGER de
 - **File browser** — open HDF5 (NXmx master files) and TIFF images from disk; scrub through frames in a series
 - **Data browser** — hierarchical beamline archive browser with configurable folder layouts; discovers proposals via OS group membership
 - **Viewport** — zoom/pan with mouse, fit-to-view, export the current frame as PNG
-- **Contrast controls** — auto and manual min/max, gamma correction, multiple colormaps (Inferno, Standard, Grayscale, Rocket, Heat), log-scale histogram
+- **Contrast controls** — auto (histogram percentiles of valid non-zero pixels, robust to hot pixels; also available for the visible region only) and manual min/max, gamma correction, multiple colormaps (Inferno, Standard, Grayscale, Rocket, Heat), log-scale histogram
 - **Overlays** — configurable resolution rings (d-spacing in Å) and beam-center crosshair drawn on the image
 - **Hover tooltip** — balloon near the cursor showing pixel coordinates, raw value, and d-spacing at that position (requires beam geometry metadata)
 - **Dozor integration** — display per-frame quality scores (Dozor score, spot count, visible resolution) loaded from a JSON file
