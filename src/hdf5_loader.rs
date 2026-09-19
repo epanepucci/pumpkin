@@ -151,9 +151,6 @@ impl Hdf5Series {
             .with_context(|| format!("Cannot read frame {index} from {ds_path}"))?;
 
         let sat = self.saturation_value;
-        let n_sat = pixels.iter().filter(|&&v| v >= sat).count();
-        let max_px = pixels.iter().copied().max().unwrap_or(0);
-        eprintln!("HDF5 frame {index}: sat_threshold={sat} pixels>={sat}: {n_sat} max_pixel={max_px}");
 
         let mut metadata = self.series_metadata.clone();
         metadata.image_number = Some(index as i64);

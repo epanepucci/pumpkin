@@ -7,7 +7,7 @@ use tokio::sync::watch;
 
 use crate::frame::{Frame, FrameMetadata};
 use crate::hdf5_loader::Hdf5Series;
-use crate::image_render::{Colormap, ImageTexture};
+use crate::image_render::{Colormap, ImageTexture, ToneMapParams};
 use crate::monitor::{MonitorBatch, MonitorConfig, start_monitor_task};
 use crate::monitor_prefetch::MonitorPrefetcher;
 use crate::viewport::{self, OverlaySettings, ViewState};
@@ -100,7 +100,7 @@ pub struct PumpkinApp {
     /// VRAM cache for tone-mapped monitor frames.
     monitor_prefetcher: MonitorPrefetcher,
     /// Contrast params last used to submit monitor prefetch requests; invalidate on change.
-    monitor_contrast: (f32, f32, f32, Colormap),
+    monitor_contrast: Option<ToneMapParams>,
     /// The prefetch cache was invalidated by a contrast change and not yet refilled.
     monitor_prefetch_pending: bool,
     /// True while the user is viewing a specific on-demand frame from the browser;
@@ -254,7 +254,7 @@ impl PumpkinApp {
             on_demand_tx,
             on_demand_rx,
             monitor_prefetcher: MonitorPrefetcher::new(),
-            monitor_contrast: (f32::NAN, f32::NAN, f32::NAN, Colormap::Inferno),
+            monitor_contrast: None,
             monitor_prefetch_pending: false,
             on_demand_active: false,
             hdf5_series: None,
@@ -494,6 +494,17 @@ impl PumpkinApp {
 
     /// True if the monitor live display should be paused because the user
     /// interacted with the viewport recently (within `monitor_pause_ms`).
+    /// Current tone-mapping parameters (contrast settings plus effective saturation).
+    fn tone_params(&self) -> ToneMapParams {
+        ToneMapParams {
+            vmin: self.contrast.vmin,
+            vmax: self.contrast.vmax,
+            gamma: self.contrast.gamma_correction,
+            saturation: self.effective_saturation(),
+            colormap: self.contrast.colormap,
+        }
+    }
+
     fn interaction_paused(&self) -> bool {
         if self.monitor_pause_ms == 0 {
             return false;
@@ -858,11 +869,7 @@ impl PumpkinApp {
         self.monitor_prefetcher.submit_batch(
             &self.monitor_frames,
             false, // cache already cleared by invalidate() above
-            self.contrast.vmin,
-            self.contrast.vmax,
-            self.contrast.gamma_correction,
-            self.effective_saturation(),
-            self.contrast.colormap,
+            self.tone_params(),
         );
 
         if let Some(frame) = self.monitor_frames.get(self.monitor_frame_index) {
@@ -919,11 +926,7 @@ impl PumpkinApp {
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         match crate::png_export::export_png(
             frame,
-            self.contrast.vmin,
-            self.contrast.vmax,
-            self.contrast.gamma_correction,
-            self.effective_saturation(),
-            self.contrast.colormap,
+            self.tone_params(),
             &self.overlays,
             &save_dir,
         ) {
@@ -1499,11 +1502,7 @@ impl PumpkinApp {
                     ctx,
                     frame,
                     self.frame_generation,
-                    self.contrast.vmin,
-                    self.contrast.vmax,
-                    self.contrast.gamma_correction,
-                    self.effective_saturation(),
-                    self.contrast.colormap,
+                    self.tone_params(),
                 ) else {
                     return;
                 };
@@ -1652,7 +1651,7 @@ impl PumpkinApp {
                     let uv_w = uv.width();
                     let uv_h = uv.height();
                     let label_font = egui::FontId::monospace(7.0);
-                    let sat = frame.saturation_value;
+                    let params = ToneMapParams { saturation: frame.saturation_value, ..self.tone_params() };
                     for spy in src_y0..src_y1 {
                         for spx in src_x0..src_x1 {
                             let pixel_index = (spy as u32 * frame.width + spx as u32) as usize;
@@ -1662,10 +1661,7 @@ impl PumpkinApp {
                             let value = frame.pixels[pixel_index];
                             let screen_x = loupe_origin.x + ((spx as f32 + 0.5) / fw - uv.min.x) / uv_w * LOUPE_PX;
                             let screen_y = loupe_origin.y + ((spy as f32 + 0.5) / fh - uv.min.y) / uv_h * LOUPE_PX;
-                            let [r, g, b] = crate::image_render::pixel_to_rgb(
-                                value, self.contrast.vmin, self.contrast.vmax,
-                                self.contrast.gamma_correction, sat, self.contrast.colormap,
-                            );
+                            let [r, g, b] = crate::image_render::pixel_to_rgb(value, params);
                             let lum = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
                             let label_color = if lum > 140.0 { egui::Color32::BLACK } else { egui::Color32::WHITE };
                             painter.text(
@@ -2176,12 +2172,12 @@ impl eframe::App for PumpkinApp {
         self.was_paused = currently_paused;
 
         // Invalidate monitor prefetcher cache when contrast settings change.
-        let cur_contrast = (self.contrast.vmin, self.contrast.vmax, self.contrast.gamma_correction, self.contrast.colormap);
+        let cur_contrast = self.tone_params();
         // While the settings are changing (slider drag) only invalidate: the frame on
         // screen is re-rendered synchronously, and the rest of the batch is
         // re-queued once the settings have been stable for a repaint.
         if !self.monitor_frames.is_empty() && !self.on_demand_active {
-            if cur_contrast != self.monitor_contrast {
+            if Some(cur_contrast) != self.monitor_contrast {
                 self.monitor_prefetcher.invalidate();
                 self.monitor_prefetch_pending = true;
                 ctx.request_repaint_after(std::time::Duration::from_millis(150));
@@ -2191,15 +2187,11 @@ impl eframe::App for PumpkinApp {
                     &self.monitor_frames,
                     Some(self.monitor_frame_index),
                     false,
-                    cur_contrast.0,
-                    cur_contrast.1,
-                    cur_contrast.2,
-                    self.effective_saturation(),
-                    cur_contrast.3,
+                    cur_contrast,
                 );
             }
         }
-        self.monitor_contrast = cur_contrast;
+        self.monitor_contrast = Some(cur_contrast);
 
         let poll_got_frame = self.poll_new_frame();
         if poll_got_frame {
@@ -2214,11 +2206,7 @@ impl eframe::App for PumpkinApp {
             self.monitor_prefetcher.submit_batch(
                 &self.monitor_frames,
                 false,
-                self.contrast.vmin,
-                self.contrast.vmax,
-                self.contrast.gamma_correction,
-                self.effective_saturation(),
-                self.contrast.colormap,
+                self.tone_params(),
             );
             if let Some(frame) = self.monitor_frames.get(self.monitor_frame_index) {
                 self.display_frame(frame.clone());

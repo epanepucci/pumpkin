@@ -4,6 +4,7 @@ mod data_browser;
 mod dozor;
 mod png_export;
 mod frame;
+mod geometry;
 mod hdf5_loader;
 mod image_render;
 mod monitor;

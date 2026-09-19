@@ -99,37 +99,32 @@ static HEAT: &[(f32, [u8; 3])] = &[
 
 // --- Texture management ---
 
+/// Everything that determines how raw counts map to colours.
+#[derive(Clone, Copy, PartialEq)]
+pub struct ToneMapParams {
+    pub vmin: f32,
+    pub vmax: f32,
+    /// Power-law exponent applied after linear normalisation.
+    pub gamma: f32,
+    /// Pixels at or above this value render black.
+    pub saturation: u16,
+    pub colormap: Colormap,
+}
+
 /// Manages the egui texture for the current image frame.
 ///
 /// Tone-maps the raw u16 pixel data to RGBA8 on the CPU using rayon, then
 /// uploads to the GPU via egui's texture API.  The texture is only
 /// re-generated when the frame, contrast settings, or colormap change.
+#[derive(Default)]
 pub struct ImageTexture {
     handle: Option<TextureHandle>,
-    last_vmin: f32,
-    last_vmax: f32,
-    last_gamma_correction: f32,
-    last_saturation: u16,
-    last_frame_generation: u64,
-    last_colormap: Colormap,
-}
-
-impl Default for ImageTexture {
-    fn default() -> Self {
-        Self {
-            handle: None,
-            last_vmin: f32::NAN,
-            last_vmax: f32::NAN,
-            last_gamma_correction: f32::NAN,
-            last_saturation: u16::MAX,
-            last_frame_generation: u64::MAX,
-            last_colormap: Colormap::Standard,
-        }
-    }
+    last_params: Option<ToneMapParams>,
+    last_frame_generation: Option<u64>,
 }
 
 impl ImageTexture {
-    /// Ensure the texture is up to date with `frame`, the given contrast, and colormap.
+    /// Ensure the texture is up to date with `frame` and the given tone-map parameters.
     ///
     /// Returns the egui `TextureHandle` if available.
     pub fn update(
@@ -137,18 +132,10 @@ impl ImageTexture {
         ctx: &Context,
         frame: &Frame,
         frame_generation: u64,
-        vmin: f32,
-        vmax: f32,
-        gamma_correction: f32,
-        saturation: u16,
-        colormap: Colormap,
+        params: ToneMapParams,
     ) -> Option<&TextureHandle> {
-        let needs_update = frame_generation != self.last_frame_generation
-            || vmin != self.last_vmin
-            || vmax != self.last_vmax
-            || gamma_correction != self.last_gamma_correction
-            || saturation != self.last_saturation
-            || colormap != self.last_colormap;
+        let needs_update = self.last_frame_generation != Some(frame_generation)
+            || self.last_params != Some(params);
 
         if needs_update {
             let color_image = tone_map_image(
@@ -156,11 +143,7 @@ impl ImageTexture {
                 frame.pixel_mask.as_deref(),
                 frame.width,
                 frame.height,
-                vmin,
-                vmax,
-                gamma_correction,
-                saturation,
-                colormap,
+                params,
             );
 
             match &mut self.handle {
@@ -170,12 +153,8 @@ impl ImageTexture {
                 }
             }
 
-            self.last_vmin = vmin;
-            self.last_vmax = vmax;
-            self.last_gamma_correction = gamma_correction;
-            self.last_saturation = saturation;
-            self.last_frame_generation = frame_generation;
-            self.last_colormap = colormap;
+            self.last_params = Some(params);
+            self.last_frame_generation = Some(frame_generation);
         }
 
         self.handle.as_ref()
@@ -185,25 +164,26 @@ impl ImageTexture {
 // --- Tone mapping ---
 
 /// Compute the rendered RGB for a single pixel value using the same mapping as `tone_map`.
-pub(crate) fn pixel_to_rgb(value: u16, vmin: f32, vmax: f32, gamma_correction: f32, saturation: u16, colormap: Colormap) -> [u8; 3] {
+pub(crate) fn pixel_to_rgb(value: u16, params: ToneMapParams) -> [u8; 3] {
+    let ToneMapParams { vmin, vmax, gamma, saturation, colormap } = params;
     if value >= saturation {
         return [0, 0, 0];
     }
     let range = (vmax - vmin).max(1.0);
     let t = ((value as f32 - vmin) / range).clamp(0.0, 1.0);
     let [r, g, b] = apply_colormap(t, colormap);
-    let att = |c: u8| -> u8 { ((c as f32 / 255.0).powf(gamma_correction) * 255.0).round() as u8 };
+    let att = |c: u8| -> u8 { ((c as f32 / 255.0).powf(gamma) * 255.0).round() as u8 };
     [att(r), att(g), att(b)]
 }
 
 /// Precompute the rendered colour for every possible `u16` value, so the
 /// per-pixel work in `tone_map_image` is a single table lookup instead of a
 /// colormap interpolation plus gamma `powf` per channel.
-fn build_lut(vmin: f32, vmax: f32, gamma_correction: f32, saturation: u16, colormap: Colormap) -> Vec<Color32> {
+fn build_lut(params: ToneMapParams) -> Vec<Color32> {
     (0..=u16::MAX as u32)
         .into_par_iter()
         .map(|v| {
-            let [r, g, b] = pixel_to_rgb(v as u16, vmin, vmax, gamma_correction, saturation, colormap);
+            let [r, g, b] = pixel_to_rgb(v as u16, params);
             Color32::from_rgb(r, g, b)
         })
         .collect()
@@ -215,14 +195,10 @@ pub(crate) fn tone_map_image(
     pixel_mask: Option<&[u8]>,
     w: u32,
     h: u32,
-    vmin: f32,
-    vmax: f32,
-    gamma_correction: f32,
-    saturation: u16,
-    colormap: Colormap,
+    params: ToneMapParams,
 ) -> ColorImage {
     const MIN_LEN: usize = 16 * 1024;
-    let lut = build_lut(vmin, vmax, gamma_correction, saturation, colormap);
+    let lut = build_lut(params);
     let mut out = vec![Color32::BLACK; pixels.len()];
 
     match pixel_mask {
@@ -249,13 +225,9 @@ pub(crate) fn tone_map(
     pixel_mask: Option<&[u8]>,
     w: u32,
     h: u32,
-    vmin: f32,
-    vmax: f32,
-    gamma_correction: f32,
-    saturation: u16,
-    colormap: Colormap,
+    params: ToneMapParams,
 ) -> Vec<u8> {
-    tone_map_image(pixels, pixel_mask, w, h, vmin, vmax, gamma_correction, saturation, colormap)
+    tone_map_image(pixels, pixel_mask, w, h, params)
         .pixels
         .iter()
         .flat_map(|c| c.to_array())
@@ -307,13 +279,13 @@ mod tests {
     fn tone_map_image_matches_pixel_to_rgb_and_mask() {
         let pixels: Vec<u16> = vec![0, 5, 50, 500, 999, 1000, 4000];
         let mask: Vec<u8> = vec![0, 0, 1, 0, 0, 0, 0];
-        let (vmin, vmax, gamma, sat) = (5.0, 600.0, 2.0, 1000);
-        let img = tone_map_image(&pixels, Some(&mask), 7, 1, vmin, vmax, gamma, sat, Colormap::Inferno);
+        let params = ToneMapParams { vmin: 5.0, vmax: 600.0, gamma: 2.0, saturation: 1000, colormap: Colormap::Inferno };
+        let img = tone_map_image(&pixels, Some(&mask), 7, 1, params);
         for (i, &v) in pixels.iter().enumerate() {
             let expected = if mask[i] != 0 {
                 [0, 0, 0]
             } else {
-                pixel_to_rgb(v, vmin, vmax, gamma, sat, Colormap::Inferno)
+                pixel_to_rgb(v, params)
             };
             let c = img.pixels[i];
             assert_eq!([c.r(), c.g(), c.b(), c.a()], [expected[0], expected[1], expected[2], 255], "pixel {i}");

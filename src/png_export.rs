@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 
 use crate::frame::Frame;
-use crate::image_render::{tone_map, Colormap};
+use crate::geometry::Geometry;
+use crate::image_render::{tone_map, ToneMapParams};
 use crate::viewport::OverlaySettings;
 
 /// Derive a PNG save filename from frame metadata.
@@ -27,18 +28,14 @@ pub fn derive_filename(frame: &Frame) -> String {
 /// metadata tEXt chunks.  Returns the full path of the written file.
 pub fn export_png(
     frame: &Frame,
-    vmin: f32,
-    vmax: f32,
-    gamma_correction: f32,
-    saturation: u16,
-    colormap: Colormap,
+    params: ToneMapParams,
     overlays: &OverlaySettings,
     save_dir: &Path,
 ) -> anyhow::Result<PathBuf> {
     let w = frame.width;
     let h = frame.height;
 
-    let mut rgba = tone_map(&frame.pixels, frame.pixel_mask.as_deref(), w, h, vmin, vmax, gamma_correction, saturation, colormap);
+    let mut rgba = tone_map(&frame.pixels, frame.pixel_mask.as_deref(), w, h, params);
 
     if overlays.show_beam_center {
         if let (Some(cx), Some(cy)) = (frame.metadata.beam_center_x, frame.metadata.beam_center_y) {
@@ -157,29 +154,16 @@ fn draw_circle(rgba: &mut [u8], width: u32, height: u32,
 }
 
 fn draw_resolution_rings(rgba: &mut [u8], width: u32, height: u32, frame: &Frame, overlays: &OverlaySettings) {
-    let meta = &frame.metadata;
-    let wavelength = meta.wavelength.or_else(|| {
-        meta.incident_energy.filter(|&e| e > 0.0).map(|e| 12398.4 / e)
-    });
-    let (Some(cx), Some(cy), Some(wavelength), Some(distance), Some(px)) = (
-        meta.beam_center_x,
-        meta.beam_center_y,
-        wavelength,
-        meta.detector_distance,
-        meta.pixel_size_x,
-    ) else {
+    let Some(geometry) = Geometry::from_metadata(&frame.metadata) else {
         return;
     };
+    let (cx, cy) = geometry.beam_center;
 
     let color = overlays.ring_color;
     let sw = overlays.ring_stroke_width.max(1.0);
 
     for ring in &overlays.resolution_rings {
-        let sin_theta = wavelength / (2.0 * ring.d_spacing);
-        if sin_theta >= 1.0 { continue; }
-        let two_theta = 2.0 * sin_theta.asin();
-        let radius_m = distance * two_theta.tan();
-        let radius_px = (radius_m / px) as f32;
-        draw_circle(rgba, width, height, cx as f32, cy as f32, radius_px, color, sw);
+        let Some(radius_px) = geometry.ring_radius_px(ring.d_spacing) else { continue };
+        draw_circle(rgba, width, height, cx as f32, cy as f32, radius_px as f32, color, sw);
     }
 }

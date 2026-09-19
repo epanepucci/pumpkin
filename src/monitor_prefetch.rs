@@ -5,7 +5,7 @@ use std::sync::{Arc, mpsc};
 use egui::{ColorImage, Context, TextureHandle, TextureOptions};
 
 use crate::frame::Frame;
-use crate::image_render::Colormap;
+use crate::image_render::ToneMapParams;
 
 struct Ready {
     generation: u64,
@@ -45,13 +45,9 @@ impl MonitorPrefetcher {
         &mut self,
         frames: &[Arc<Frame>],
         new_series: bool,
-        vmin: f32,
-        vmax: f32,
-        gamma_correction: f32,
-        saturation: u16,
-        colormap: Colormap,
+        params: ToneMapParams,
     ) {
-        self.submit_batch_skipping(frames, None, new_series, vmin, vmax, gamma_correction, saturation, colormap);
+        self.submit_batch_skipping(frames, None, new_series, params);
     }
 
     /// Like `submit_batch`, but leaves frame `skip` alone (e.g. the frame on
@@ -61,11 +57,7 @@ impl MonitorPrefetcher {
         frames: &[Arc<Frame>],
         skip: Option<usize>,
         new_series: bool,
-        vmin: f32,
-        vmax: f32,
-        gamma_correction: f32,
-        saturation: u16,
-        colormap: Colormap,
+        params: ToneMapParams,
     ) {
         if new_series {
             self.textures.clear();
@@ -91,11 +83,7 @@ impl MonitorPrefetcher {
                     frame.pixel_mask.as_deref(),
                     frame.width,
                     frame.height,
-                    vmin,
-                    vmax,
-                    gamma_correction,
-                    saturation,
-                    colormap,
+                    params,
                 );
                 // try_send: never block a rayon thread waiting on a full channel.
                 let _ = tx.try_send(Ready { generation, index: idx, image });

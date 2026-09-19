@@ -3,6 +3,7 @@ use std::sync::Arc;
 use egui::{Painter, Pos2, Rect, Response, Vec2};
 
 use crate::frame::Frame;
+use crate::geometry::Geometry;
 
 /// Zoom/pan state for the image viewport.
 #[derive(Clone)]
@@ -155,43 +156,22 @@ fn draw_resolution_rings(
     frame: &Frame,
     overlays: &OverlaySettings,
 ) {
-    let meta = &frame.metadata;
-    // Derive wavelength (Å) from incident_energy (eV) if not directly available:
-    // λ = hc/E = 12398.4 eV·Å / E
-    let wavelength = meta.wavelength.or_else(|| {
-        meta.incident_energy.filter(|&e| e > 0.0).map(|e| 12398.4 / e)
-    });
-    let (Some(cx), Some(cy), Some(wavelength), Some(distance), Some(px), Some(py)) = (
-        meta.beam_center_x,
-        meta.beam_center_y,
-        wavelength,
-        meta.detector_distance,
-        meta.pixel_size_x,
-        meta.pixel_size_y,
-    ) else {
+    let Some(geometry) = Geometry::from_metadata(&frame.metadata) else {
         return;
     };
 
     let origin = viewport.min;
+    let (cx, cy) = geometry.beam_center;
     let center_screen = view.image_to_screen(Pos2::new(cx as f32, cy as f32), origin);
-    let px_screen_x = view.zoom / px as f32; // screen pixels per metre in x
 
     let stroke = egui::Stroke::new(overlays.ring_stroke_width, overlays.ring_color);
     let font_size = 11.0 * overlays.ring_font_scale;
 
     for ring in &overlays.resolution_rings {
-        // Bragg: sin(theta) = lambda / (2 * d)
-        let sin_theta = wavelength / (2.0 * ring.d_spacing);
-        if sin_theta >= 1.0 {
+        let Some(radius_px) = geometry.ring_radius_px(ring.d_spacing) else {
             continue;
-        }
-        let two_theta = 2.0 * sin_theta.asin();
-        // Ring radius in metres on detector.
-        let radius_m = distance * two_theta.tan();
-        // Ring radius in image pixels (using x pixel size; assumes square pixels).
-        let radius_px = (radius_m / px) as f32;
-        // Ring radius in screen pixels.
-        let radius_screen = radius_px * view.zoom;
+        };
+        let radius_screen = radius_px as f32 * view.zoom;
 
         painter.circle_stroke(center_screen, radius_screen, stroke);
 
@@ -205,8 +185,6 @@ fn draw_resolution_rings(
                 overlays.ring_color,
             );
         }
-
-        let _ = (px_screen_x, py);
     }
 }
 
@@ -320,25 +298,5 @@ impl Default for OverlaySettings {
 /// Returns `None` when any required metadata field (beam center, distance, wavelength,
 /// pixel size) is absent or when the pixel is at the beam center.
 pub fn pixel_to_resolution(ix: f64, iy: f64, frame: &Frame) -> Option<f64> {
-    let meta = &frame.metadata;
-    let wavelength = meta.wavelength.or_else(|| {
-        meta.incident_energy.filter(|&e| e > 0.0).map(|e| 12398.4 / e)
-    })?;
-    let cx = meta.beam_center_x?;
-    let cy = meta.beam_center_y?;
-    let distance = meta.detector_distance?;
-    let px = meta.pixel_size_x?;
-
-    let dx_m = (ix - cx) * px;
-    let dy_m = (iy - cy) * px;
-    let r_m = (dx_m * dx_m + dy_m * dy_m).sqrt();
-    if r_m == 0.0 {
-        return None;
-    }
-    let two_theta = (r_m / distance).atan();
-    let sin_theta = (two_theta / 2.0).sin();
-    if sin_theta == 0.0 {
-        return None;
-    }
-    Some(wavelength / (2.0 * sin_theta))
+    Geometry::from_metadata(&frame.metadata)?.d_at_pixel(ix, iy)
 }
