@@ -310,6 +310,12 @@ impl Config {
     }
 }
 
+/// The app's config folder (`$HOME/.config/pumpkin`), where settings and
+/// remembered state live.
+pub fn config_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config").join("pumpkin"))
+}
+
 fn default_config_path() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config").join("pumpkin").join("config.toml"))
+    config_dir().map(|d| d.join("config.toml"))
 }

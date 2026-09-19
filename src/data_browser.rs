@@ -4,6 +4,7 @@ use std::sync::mpsc;
 use hdf5_metno as hdf5;
 
 use crate::config::{DataBrowserConfig, DatasetConfig, LevelConfig, ProposalSource};
+use crate::recent_files::{self, RecentMonitored};
 
 // ─── Proposal cache ───────────────────────────────────────────────────────────
 
@@ -649,6 +650,11 @@ pub struct DataBrowser {
     state: RootState,
     proposal_filter: String,
     cfg: DataBrowserConfig,
+    /// Master files seen while monitoring the detector, newest first.
+    recent: RecentMonitored,
+    /// Cached "does this file exist" answers, so the list doesn't stat network
+    /// storage on every repaint.
+    exists_cache: std::collections::HashMap<String, (std::time::Instant, bool)>,
 }
 
 impl DataBrowser {
@@ -663,7 +669,13 @@ impl DataBrowser {
         } else {
             Self::start_group_fetch(source.clone())
         };
-        Self { state, proposal_filter: String::new(), cfg }
+        Self {
+            state,
+            proposal_filter: String::new(),
+            cfg,
+            recent: RecentMonitored::load(),
+            exists_cache: Default::default(),
+        }
     }
 
     fn make_proposal_nodes(proposals: &[String], cfg: &DataBrowserConfig) -> Vec<ProposalNode> {
@@ -718,7 +730,63 @@ impl DataBrowser {
         }
     }
 
+    /// Remember that the series `series_id` (written with `name_pattern`) was monitored.
+    pub fn record_monitored(&mut self, name_pattern: &str, series_id: u64) {
+        self.recent.record(name_pattern, series_id, unix_now());
+    }
+
+    /// The "Recent monitored" list. Returns the file the user clicked, if any.
+    fn show_recent(&mut self, ui: &mut egui::Ui) -> Option<PathBuf> {
+        const EXISTS_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+        if self.recent.entries().is_empty() {
+            return None;
+        }
+        let now = unix_now();
+        let mut clicked = None;
+        egui::CollapsingHeader::new(format!("Recent monitored ({})", self.recent.entries().len()))
+            .default_open(true)
+            .show(ui, |ui| {
+                for entry in self.recent.entries() {
+                    let exists = {
+                        let cached = self.exists_cache.get(&entry.path).filter(|(t, _)| t.elapsed() < EXISTS_TTL);
+                        match cached {
+                            Some(&(_, e)) => e,
+                            None => {
+                                let e = Path::new(&entry.path).exists();
+                                self.exists_cache.insert(entry.path.clone(), (std::time::Instant::now(), e));
+                                e
+                            }
+                        }
+                    };
+                    let name = crate::text::display_name(&entry.path).unwrap_or(&entry.path);
+                    let age = recent_files::format_age(now.saturating_sub(entry.seen_unix));
+                    let mut text = egui::RichText::new(name).monospace().small();
+                    if !exists {
+                        text = text.weak().strikethrough();
+                    }
+                    let response = ui
+                        .add(egui::Label::new(text).sense(egui::Sense::click()))
+                        .on_hover_text(if exists {
+                            format!("{}\n{age}", entry.path)
+                        } else {
+                            format!("{}\n{age}\nFile not found", entry.path)
+                        });
+                    if exists && response.clicked() {
+                        clicked = Some(PathBuf::from(&entry.path));
+                    }
+                }
+            });
+        ui.separator();
+        clicked
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<PathBuf> {
+        let recent_choice = self.show_recent(ui);
+        let proposal_choice = self.show_proposals(ui);
+        recent_choice.or(proposal_choice)
+    }
+
+    fn show_proposals(&mut self, ui: &mut egui::Ui) -> Option<PathBuf> {
         filter_bar(ui, &mut self.proposal_filter, "Filter proposals…");
         let proposal_filter = self.proposal_filter.to_lowercase();
 

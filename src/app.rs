@@ -793,6 +793,9 @@ impl PumpkinApp {
         self.monitor_frames = batch.frames;
 
         if new_series {
+            if let (Some(db), Some(pattern)) = (self.data_browser.as_mut(), self.monitor_series_meta.name_pattern.as_deref()) {
+                db.record_monitored(pattern, batch.series_id);
+            }
             // New series: always go live, discard any on-demand or remote HDF5 selection.
             self.on_demand_active = false;
             self.hdf5_series = None;

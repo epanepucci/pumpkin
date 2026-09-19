@@ -12,6 +12,7 @@ mod image_render;
 mod line_profile;
 mod monitor;
 mod monitor_prefetch;
+mod recent_files;
 mod remote;
 mod text;
 mod tiff_loader;
