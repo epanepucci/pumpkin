@@ -5,45 +5,14 @@ use egui::{CentralPanel, Context, Key, KeyboardShortcut, Modifiers, ScrollArea, 
 use egui_file_dialog::FileDialog;
 use tokio::sync::watch;
 
+use crate::contrast::{ContrastState, AUTO_CONTRAST_MIN_SPAN, auto_contrast, auto_contrast_region};
 use crate::frame::{Frame, FrameMetadata};
 use crate::hdf5_loader::Hdf5Series;
+use crate::line_profile::{self, LineProfilePeak};
 use crate::image_render::{Colormap, ImageTexture, ToneMapParams};
 use crate::monitor::{MonitorBatch, MonitorConfig, start_monitor_task};
 use crate::monitor_prefetch::MonitorPrefetcher;
 use crate::viewport::{self, OverlaySettings, ViewState};
-
-/// Tone-mapping controls.
-#[derive(Clone, PartialEq)]
-pub struct ContrastState {
-    pub vmin: f32,
-    pub vmax: f32,
-    pub auto: bool,
-    pub colormap: Colormap,
-    /// Power-law exponent applied after linear normalisation: t' = t^gamma_correction.
-    /// 1.0 = linear (no change); >1.0 darkens background, preserves bright peaks.
-    pub gamma_correction: f32,
-    pub histogram_log: bool,
-    pub histogram_bins: usize,
-}
-
-impl Default for ContrastState {
-    fn default() -> Self {
-        Self {
-            vmin: 0.0,
-            vmax: 1000.0,
-            auto: true,
-            colormap: Colormap::Inferno,
-            gamma_correction: 1.0,
-            histogram_log: true,
-            histogram_bins: 256,
-        }
-    }
-}
-
-struct LineProfilePeak {
-    index: usize,
-    d_spacing: Option<f64>,
-}
 
 pub struct PumpkinApp {
     frame: Option<Arc<Frame>>,
@@ -355,11 +324,12 @@ impl PumpkinApp {
         Some(pngs[nanos as usize % pngs.len()].clone())
     }
 
-    fn decode_splash_png(bytes: &[u8]) -> egui::ColorImage {
+    fn decode_splash_png(bytes: &[u8]) -> anyhow::Result<egui::ColorImage> {
+        use anyhow::Context as _;
         let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-        let mut reader = decoder.read_info().expect("splash PNG info");
-        let mut buf = vec![0u8; reader.output_buffer_size().expect("splash PNG buffer size")];
-        let info = reader.next_frame(&mut buf).expect("splash PNG frame");
+        let mut reader = decoder.read_info().context("splash PNG info")?;
+        let mut buf = vec![0u8; reader.output_buffer_size().context("splash PNG buffer size")?];
+        let info = reader.next_frame(&mut buf).context("splash PNG frame")?;
         let raw = &buf[..info.buffer_size()];
         let width = info.width as usize;
         let height = info.height as usize;
@@ -380,9 +350,9 @@ impl PumpkinApp {
                 .chunks_exact(2)
                 .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[0], c[0], c[1]))
                 .collect(),
-            t => panic!("unsupported splash PNG color type: {t:?}"),
+            t => anyhow::bail!("unsupported splash PNG color type: {t:?}"),
         };
-        egui::ColorImage::new([width, height], pixels)
+        Ok(egui::ColorImage::new([width, height], pixels))
     }
 
     pub fn load_hdf5_master(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
@@ -1035,7 +1005,7 @@ impl PumpkinApp {
                     row!("Image #", n.to_string());
                 }
                 if let Some(ref p) = meta.name_pattern {
-                    if let Some(name) = display_name(p) {
+                    if let Some(name) = crate::text::display_name(p) {
                         row!("Name", name.to_string());
                     }
                 }
@@ -1398,14 +1368,16 @@ impl PumpkinApp {
                 if let Some(ref dir) = self.splash_folder.clone() {
                     if let Some(path) = Self::pick_random_png(dir) {
                         match std::fs::read(&path) {
-                            Ok(bytes) => {
-                                let image = Self::decode_splash_png(&bytes);
-                                self.splash_texture = Some(ctx.load_texture(
-                                    "splash",
-                                    image,
-                                    egui::TextureOptions::LINEAR,
-                                ));
-                            }
+                            Ok(bytes) => match Self::decode_splash_png(&bytes) {
+                                Ok(image) => {
+                                    self.splash_texture = Some(ctx.load_texture(
+                                        "splash",
+                                        image,
+                                        egui::TextureOptions::LINEAR,
+                                    ));
+                                }
+                                Err(e) => eprintln!("splash: cannot decode {}: {e:#}", path.display()),
+                            },
                             Err(e) => eprintln!("splash: cannot read {}: {e}", path.display()),
                         }
                     } else {
@@ -1481,7 +1453,7 @@ impl PumpkinApp {
                 let img = self.view.screen_to_image(pos, available.min);
                 self.line_profile_end = Some(img);
                 if let Some(start) = self.line_profile_start {
-                    let profile = Self::compute_line_profile(frame, start, img, self.line_profile_width);
+                    let profile = line_profile::sample(frame, start, img, self.line_profile_width);
                     self.line_profile_data = profile;
                 }
             }
@@ -1809,7 +1781,7 @@ impl PumpkinApp {
                 let (resp, painter) = ui.allocate_painter(size, egui::Sense::hover());
                 let peaks = match (self.frame.as_deref(), self.line_profile_start, self.line_profile_end) {
                     (Some(frame), Some(start), Some(end)) => {
-                        Self::line_profile_peaks(frame, start, end, &data)
+                        line_profile::peaks_with_resolution(frame, start, end, &data)
                     }
                     _ => Vec::new(),
                 };
@@ -1923,75 +1895,6 @@ impl PumpkinApp {
         }
     }
 
-    fn line_profile_peaks(
-        frame: &Frame,
-        start: egui::Pos2,
-        end: egui::Pos2,
-        data: &[f32],
-    ) -> Vec<LineProfilePeak> {
-        let indices = detect_line_profile_peaks(data);
-        if indices.is_empty() {
-            return Vec::new();
-        }
-
-        let dx = end.x - start.x;
-        let dy = end.y - start.y;
-        let len = (dx * dx + dy * dy).sqrt();
-        if len < 1.0 {
-            return Vec::new();
-        }
-        let ux = dx / len;
-        let uy = dy / len;
-
-        indices
-            .into_iter()
-            .map(|index| {
-                let x = start.x + ux * index as f32;
-                let y = start.y + uy * index as f32;
-                LineProfilePeak {
-                    index,
-                    d_spacing: viewport::pixel_to_resolution(x as f64, y as f64, frame),
-                }
-            })
-            .collect()
-    }
-
-    fn compute_line_profile(frame: &Frame, start: egui::Pos2, end: egui::Pos2, width: u32) -> Vec<f32> {
-        let dx = (end.x - start.x) as f64;
-        let dy = (end.y - start.y) as f64;
-        let len = (dx * dx + dy * dy).sqrt();
-        if len < 1.0 {
-            return vec![];
-        }
-        let steps = len as usize + 1;
-        let tx = dx / len;
-        let ty = dy / len;
-        // Perpendicular direction for orthogonal sampling.
-        let nx = -ty;
-        let ny = tx;
-        let half = width as i64 / 2;
-
-        let mut profile = vec![0.0f32; steps];
-        for (step, val) in profile.iter_mut().enumerate() {
-            let cx = start.x as f64 + tx * step as f64;
-            let cy = start.y as f64 + ty * step as f64;
-            let mut sum = 0.0f32;
-            for w in 0..width as i64 {
-                let offset = w - half;
-                let qx = (cx + offset as f64 * nx).round() as i64;
-                let qy = (cy + offset as f64 * ny).round() as i64;
-                if qx >= 0 && qy >= 0 && qx < frame.width as i64 && qy < frame.height as i64 {
-                    let pixel_index = (qy as u32 * frame.width + qx as u32) as usize;
-                    if !frame.is_masked_index(pixel_index) {
-                        sum += frame.pixels[pixel_index] as f32;
-                    }
-                }
-            }
-            *val = sum;
-        }
-        profile
-    }
-
     fn draw_series_name_overlay(&self, ui: &Ui, viewport: egui::Rect, frame: &Frame) {
         let Some(name_pattern) = frame.metadata.name_pattern.as_deref() else {
             return;
@@ -2002,7 +1905,7 @@ impl PumpkinApp {
         };
         let max_text_width = (viewport.width() - 44.0).max(0.0);
         let max_chars = (max_text_width / 7.0).floor().max(8.0) as usize;
-        let label = elide_middle(&full_label, max_chars);
+        let label = crate::text::elide_middle(&full_label, max_chars);
 
         let font_id = egui::FontId::proportional(13.0);
         let galley = ui.painter().layout_no_wrap(
@@ -2333,204 +2236,5 @@ impl eframe::App for PumpkinApp {
         CentralPanel::default().show(ctx, |ui| {
             self.show_viewport(ctx, ui);
         });
-    }
-}
-
-/// Same algorithm as `auto_contrast` but restricted to the pixels currently
-/// visible in the viewport. Falls back to the full-frame version if the
-/// visible region has no valid (unmasked, unsaturated, non-zero) pixels.
-fn auto_contrast_region(frame: &Frame, view: &ViewState, viewport: egui::Rect) -> (f32, f32) {
-    let x0 = view.offset.x.max(0.0) as u32;
-    let y0 = view.offset.y.max(0.0) as u32;
-    let x1 = (view.offset.x + viewport.width() / view.zoom).min(frame.width as f32) as u32;
-    let y1 = (view.offset.y + viewport.height() / view.zoom).min(frame.height as f32) as u32;
-
-    if x1 <= x0 || y1 <= y0 {
-        return auto_contrast(frame);
-    }
-
-    let indices = (y0..y1).flat_map(|y| (x0..x1).map(move |x| (y * frame.width + x) as usize));
-    contrast_from_histogram(frame, indices).unwrap_or_else(|| auto_contrast(frame))
-}
-
-fn display_name(value: &str) -> Option<&str> {
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
-    }
-
-    Some(
-        std::path::Path::new(value)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(value),
-    )
-}
-
-fn elide_middle(value: &str, max_chars: usize) -> String {
-    let len = value.chars().count();
-    if len <= max_chars {
-        return value.to_owned();
-    }
-
-    let keep = max_chars.saturating_sub(3);
-    let front = keep / 2;
-    let back = keep - front;
-    let prefix: String = value.chars().take(front).collect();
-    let suffix: String = value.chars().skip(len - back).collect();
-    format!("{prefix}...{suffix}")
-}
-
-fn detect_line_profile_peaks(data: &[f32]) -> Vec<usize> {
-    const MAX_PEAKS: usize = 12;
-    if data.len() < 3 {
-        return Vec::new();
-    }
-
-    let min_v = data.iter().copied().fold(f32::INFINITY, f32::min);
-    let max_v = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let range = max_v - min_v;
-    if !range.is_finite() || range <= 0.0 {
-        return Vec::new();
-    }
-
-    let min_prominence = range * 0.08;
-    let threshold = min_v + range * 0.15;
-    let min_distance = (data.len() / 100).clamp(3, 20);
-    let mut candidates = Vec::<(usize, f32)>::new();
-
-    for i in 1..data.len() - 1 {
-        let value = data[i];
-        if value < threshold || value <= data[i - 1] || value < data[i + 1] {
-            continue;
-        }
-        let left = data[i.saturating_sub(min_distance)..i]
-            .iter()
-            .copied()
-            .fold(value, f32::min);
-        let right = data[i + 1..=(i + min_distance).min(data.len() - 1)]
-            .iter()
-            .copied()
-            .fold(value, f32::min);
-        let prominence = value - left.max(right);
-        if prominence >= min_prominence {
-            candidates.push((i, value));
-        }
-    }
-
-    candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    let mut selected = Vec::<usize>::new();
-    for (idx, _) in candidates {
-        if selected
-            .iter()
-            .all(|&existing| existing.abs_diff(idx) >= min_distance)
-        {
-            selected.push(idx);
-            if selected.len() == MAX_PEAKS {
-                break;
-            }
-        }
-    }
-    selected.sort_unstable();
-    selected
-}
-
-/// Lower / upper percentiles (of valid, non-zero pixels) used for auto contrast.
-const AUTO_CONTRAST_LOW_PCT: f64 = 0.01;
-const AUTO_CONTRAST_HIGH_PCT: f64 = 0.998;
-/// Minimum display range so near-empty frames don't collapse to a flat image.
-const AUTO_CONTRAST_MIN_SPAN: f32 = 5.0;
-
-/// Percentile-based contrast over the whole frame. See `contrast_from_histogram`.
-fn auto_contrast(frame: &Frame) -> (f32, f32) {
-    contrast_from_histogram(frame, 0..frame.pixels.len())
-        .unwrap_or((0.0, AUTO_CONTRAST_MIN_SPAN))
-}
-
-/// Build a histogram of the valid pixels at `indices` (unmasked and below the
-/// saturation value) in one O(n) pass and derive (vmin, vmax) from percentiles
-/// of the non-zero pixels. Zeros dominate diffraction frames and would pin the
-/// low percentile at 0, and a percentile (unlike the maximum) is robust against
-/// hot pixels. Returns `None` if there are no valid non-zero pixels.
-fn contrast_from_histogram(
-    frame: &Frame,
-    indices: impl Iterator<Item = usize>,
-) -> Option<(f32, f32)> {
-    let sat = frame.saturation_value;
-    let mut hist = vec![0u32; u16::MAX as usize + 1];
-    let mut total = 0u64;
-    for i in indices {
-        let v = frame.pixels[i];
-        if v != 0 && v < sat && !frame.is_masked_index(i) {
-            hist[v as usize] += 1;
-            total += 1;
-        }
-    }
-    if total == 0 {
-        return None;
-    }
-
-    // Smallest value whose cumulative count reaches the requested fraction.
-    let percentile = |frac: f64| -> u16 {
-        let target = ((total as f64 * frac).ceil() as u64).clamp(1, total);
-        let mut cum = 0u64;
-        for (v, &count) in hist.iter().enumerate() {
-            cum += count as u64;
-            if cum >= target {
-                return v as u16;
-            }
-        }
-        u16::MAX
-    };
-
-    let vmin = percentile(AUTO_CONTRAST_LOW_PCT) as f32;
-    let vmax = (percentile(AUTO_CONTRAST_HIGH_PCT) as f32).max(vmin + AUTO_CONTRAST_MIN_SPAN);
-    Some((vmin, vmax))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_frame(pixels: Vec<u16>, sat: u16) -> Frame {
-        Frame {
-            width: pixels.len() as u32,
-            height: 1,
-            pixels,
-            pixel_mask: None,
-            saturation_value: sat,
-            metadata: Default::default(),
-        }
-    }
-
-    #[test]
-    fn auto_contrast_ignores_hot_pixel_and_zeros() {
-        let mut pixels = vec![0u16; 5000];
-        pixels.extend((0..4990).map(|i| 2 + (i % 8) as u16));
-        pixels.extend([9000u16; 3]); // hot pixels: < 0.1% of valid pixels
-        let (vmin, vmax) = auto_contrast(&test_frame(pixels, 60000));
-        assert!(vmin >= 2.0 && vmin <= 3.0, "vmin={vmin}");
-        assert!(vmax > vmin && vmax < 100.0, "vmax={vmax}");
-    }
-
-    #[test]
-    fn auto_contrast_empty_frame_has_positive_span() {
-        let (vmin, vmax) = auto_contrast(&test_frame(vec![0; 100], 60000));
-        assert!(vmax > vmin);
-    }
-
-    #[test]
-    fn detects_spaced_line_profile_peaks() {
-        let mut data = vec![10.0; 80];
-        data[18] = 100.0;
-        data[42] = 140.0;
-        data[65] = 120.0;
-
-        assert_eq!(detect_line_profile_peaks(&data), vec![18, 42, 65]);
-    }
-
-    #[test]
-    fn ignores_flat_line_profiles() {
-        assert!(detect_line_profile_peaks(&[5.0; 32]).is_empty());
     }
 }

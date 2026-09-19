@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod contrast;
 mod data_browser;
 mod dozor;
 mod png_export;
@@ -7,15 +8,18 @@ mod frame;
 mod geometry;
 mod hdf5_loader;
 mod image_render;
+mod line_profile;
 mod monitor;
 mod monitor_prefetch;
 mod remote;
+mod text;
 mod tiff_loader;
 mod viewport;
 
 use std::path::PathBuf;
 
-use app::{ContrastState, PumpkinApp};
+use app::PumpkinApp;
+use contrast::ContrastState;
 use clap::Parser;
 use viewport::{OverlaySettings, ResolutionRing};
 
