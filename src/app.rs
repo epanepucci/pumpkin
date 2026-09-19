@@ -101,6 +101,8 @@ pub struct PumpkinApp {
     monitor_prefetcher: MonitorPrefetcher,
     /// Contrast params last used to submit monitor prefetch requests; invalidate on change.
     monitor_contrast: (f32, f32, f32, Colormap),
+    /// The prefetch cache was invalidated by a contrast change and not yet refilled.
+    monitor_prefetch_pending: bool,
     /// True while the user is viewing a specific on-demand frame from the browser;
     /// suppresses prefetcher use and batch re-submission so the cached monitor
     /// texture never overwrites what the user explicitly selected.
@@ -249,6 +251,7 @@ impl PumpkinApp {
             on_demand_rx,
             monitor_prefetcher: MonitorPrefetcher::new(),
             monitor_contrast: (f32::NAN, f32::NAN, f32::NAN, Colormap::Inferno),
+            monitor_prefetch_pending: false,
             on_demand_active: false,
             hdf5_series: None,
             hdf5_master_path: None,
@@ -2085,17 +2088,27 @@ impl eframe::App for PumpkinApp {
 
         // Invalidate monitor prefetcher cache when contrast settings change.
         let cur_contrast = (self.contrast.vmin, self.contrast.vmax, self.contrast.gamma_correction, self.contrast.colormap);
-        if !self.monitor_frames.is_empty() && !self.on_demand_active && cur_contrast != self.monitor_contrast {
-            self.monitor_prefetcher.invalidate();
-            self.monitor_prefetcher.submit_batch(
-                &self.monitor_frames,
-                false,
-                cur_contrast.0,
-                cur_contrast.1,
-                cur_contrast.2,
-                self.effective_saturation(),
-                cur_contrast.3,
-            );
+        // While the settings are changing (slider drag) only invalidate: the frame on
+        // screen is re-rendered synchronously, and the rest of the batch is
+        // re-queued once the settings have been stable for a repaint.
+        if !self.monitor_frames.is_empty() && !self.on_demand_active {
+            if cur_contrast != self.monitor_contrast {
+                self.monitor_prefetcher.invalidate();
+                self.monitor_prefetch_pending = true;
+                ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            } else if self.monitor_prefetch_pending {
+                self.monitor_prefetch_pending = false;
+                self.monitor_prefetcher.submit_batch_skipping(
+                    &self.monitor_frames,
+                    Some(self.monitor_frame_index),
+                    false,
+                    cur_contrast.0,
+                    cur_contrast.1,
+                    cur_contrast.2,
+                    self.effective_saturation(),
+                    cur_contrast.3,
+                );
+            }
         }
         self.monitor_contrast = cur_contrast;
 

@@ -1,4 +1,4 @@
-use egui::{ColorImage, Context, TextureHandle, TextureOptions};
+use egui::{Color32, ColorImage, Context, TextureHandle, TextureOptions};
 use rayon::prelude::*;
 
 use crate::frame::Frame;
@@ -151,7 +151,7 @@ impl ImageTexture {
             || colormap != self.last_colormap;
 
         if needs_update {
-            let rgba = tone_map(
+            let color_image = tone_map_image(
                 &frame.pixels,
                 frame.pixel_mask.as_deref(),
                 frame.width,
@@ -162,8 +162,6 @@ impl ImageTexture {
                 saturation,
                 colormap,
             );
-            let color_image =
-                ColorImage::from_rgba_unmultiplied([frame.width as usize, frame.height as usize], &rgba);
 
             match &mut self.handle {
                 Some(h) => h.set(color_image, TextureOptions::NEAREST),
@@ -198,33 +196,70 @@ pub(crate) fn pixel_to_rgb(value: u16, vmin: f32, vmax: f32, gamma_correction: f
     [att(r), att(g), att(b)]
 }
 
+/// Precompute the rendered colour for every possible `u16` value, so the
+/// per-pixel work in `tone_map_image` is a single table lookup instead of a
+/// colormap interpolation plus gamma `powf` per channel.
+fn build_lut(vmin: f32, vmax: f32, gamma_correction: f32, saturation: u16, colormap: Colormap) -> Vec<Color32> {
+    (0..=u16::MAX as u32)
+        .into_par_iter()
+        .map(|v| {
+            let [r, g, b] = pixel_to_rgb(v as u16, vmin, vmax, gamma_correction, saturation, colormap);
+            Color32::from_rgb(r, g, b)
+        })
+        .collect()
+}
+
+/// Tone-map raw pixels straight into an egui `ColorImage` (no intermediate RGBA buffer).
+pub(crate) fn tone_map_image(
+    pixels: &[u16],
+    pixel_mask: Option<&[u8]>,
+    w: u32,
+    h: u32,
+    vmin: f32,
+    vmax: f32,
+    gamma_correction: f32,
+    saturation: u16,
+    colormap: Colormap,
+) -> ColorImage {
+    const MIN_LEN: usize = 16 * 1024;
+    let lut = build_lut(vmin, vmax, gamma_correction, saturation, colormap);
+    let mut out = vec![Color32::BLACK; pixels.len()];
+
+    match pixel_mask {
+        Some(mask) => {
+            out.par_iter_mut().with_min_len(MIN_LEN).enumerate().for_each(|(i, px)| {
+                if mask.get(i).is_none_or(|&m| m == 0) {
+                    *px = lut[pixels[i] as usize];
+                }
+            });
+        }
+        None => {
+            out.par_iter_mut().zip(pixels.par_iter()).with_min_len(MIN_LEN).for_each(|(px, &v)| {
+                *px = lut[v as usize];
+            });
+        }
+    }
+
+    ColorImage::new([w as usize, h as usize], out)
+}
+
+/// RGBA8 variant of `tone_map_image`, used for PNG export.
 pub(crate) fn tone_map(
     pixels: &[u16],
     pixel_mask: Option<&[u8]>,
-    _w: u32,
-    _h: u32,
+    w: u32,
+    h: u32,
     vmin: f32,
     vmax: f32,
     gamma_correction: f32,
     saturation: u16,
     colormap: Colormap,
 ) -> Vec<u8> {
-    let range = (vmax - vmin).max(1.0);
-    let mut rgba = vec![0u8; pixels.len() * 4];
-
-    rgba.par_chunks_mut(4).enumerate().for_each(|(i, chunk)| {
-        let v = pixels[i];
-        if pixel_mask.and_then(|mask| mask.get(i)).is_some_and(|&m| m != 0) || v >= saturation {
-            chunk.copy_from_slice(&[0, 0, 0, 255]);
-        } else {
-            let t = ((v as f32 - vmin) / range).clamp(0.0, 1.0);
-            let [r, g, b] = apply_colormap(t, colormap);
-            let att = |c: u8| -> u8 { ((c as f32 / 255.0).powf(gamma_correction) * 255.0).round() as u8 };
-            chunk.copy_from_slice(&[att(r), att(g), att(b), 255]);
-        }
-    });
-
-    rgba
+    tone_map_image(pixels, pixel_mask, w, h, vmin, vmax, gamma_correction, saturation, colormap)
+        .pixels
+        .iter()
+        .flat_map(|c| c.to_array())
+        .collect()
 }
 
 #[inline]
@@ -262,4 +297,26 @@ fn lerp_colormap(t: f32, stops: &[(f32, [u8; 3])]) -> [u8; 3] {
         (c0[1] as f32 + f * (c1[1] as f32 - c0[1] as f32)).round() as u8,
         (c0[2] as f32 + f * (c1[2] as f32 - c0[2] as f32)).round() as u8,
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tone_map_image_matches_pixel_to_rgb_and_mask() {
+        let pixels: Vec<u16> = vec![0, 5, 50, 500, 999, 1000, 4000];
+        let mask: Vec<u8> = vec![0, 0, 1, 0, 0, 0, 0];
+        let (vmin, vmax, gamma, sat) = (5.0, 600.0, 2.0, 1000);
+        let img = tone_map_image(&pixels, Some(&mask), 7, 1, vmin, vmax, gamma, sat, Colormap::Inferno);
+        for (i, &v) in pixels.iter().enumerate() {
+            let expected = if mask[i] != 0 {
+                [0, 0, 0]
+            } else {
+                pixel_to_rgb(v, vmin, vmax, gamma, sat, Colormap::Inferno)
+            };
+            let c = img.pixels[i];
+            assert_eq!([c.r(), c.g(), c.b(), c.a()], [expected[0], expected[1], expected[2], 255], "pixel {i}");
+        }
+    }
 }

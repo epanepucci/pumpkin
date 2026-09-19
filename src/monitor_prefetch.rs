@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 
 use egui::{ColorImage, Context, TextureHandle, TextureOptions};
@@ -21,6 +22,9 @@ pub struct MonitorPrefetcher {
     in_flight: HashSet<usize>,
     /// Incremented on series change or contrast change; stale results are discarded.
     generation: u64,
+    /// Mirror of `generation` that queued rayon tasks check before starting,
+    /// so tasks made stale by a newer contrast setting exit without work.
+    live_generation: Arc<AtomicU64>,
     res_tx: mpsc::SyncSender<Ready>,
     res_rx: mpsc::Receiver<Ready>,
 }
@@ -28,7 +32,7 @@ pub struct MonitorPrefetcher {
 impl MonitorPrefetcher {
     pub fn new() -> Self {
         let (res_tx, res_rx) = mpsc::sync_channel(16);
-        Self { textures: HashMap::new(), in_flight: HashSet::new(), generation: 0, res_tx, res_rx }
+        Self { textures: HashMap::new(), in_flight: HashSet::new(), generation: 0, live_generation: Arc::new(AtomicU64::new(0)), res_tx, res_rx }
     }
 
     pub fn get(&self, index: usize) -> Option<&TextureHandle> {
@@ -47,21 +51,42 @@ impl MonitorPrefetcher {
         saturation: u16,
         colormap: Colormap,
     ) {
+        self.submit_batch_skipping(frames, None, new_series, vmin, vmax, gamma_correction, saturation, colormap);
+    }
+
+    /// Like `submit_batch`, but leaves frame `skip` alone (e.g. the frame on
+    /// screen, which is rendered synchronously by the caller).
+    pub fn submit_batch_skipping(
+        &mut self,
+        frames: &[Arc<Frame>],
+        skip: Option<usize>,
+        new_series: bool,
+        vmin: f32,
+        vmax: f32,
+        gamma_correction: f32,
+        saturation: u16,
+        colormap: Colormap,
+    ) {
         if new_series {
             self.textures.clear();
             self.in_flight.clear();
             self.generation += 1;
+            self.live_generation.store(self.generation, Ordering::Relaxed);
         }
 
         let generation = self.generation;
         for (idx, frame) in frames.iter().enumerate() {
-            if self.textures.contains_key(&idx) || self.in_flight.contains(&idx) {
+            if Some(idx) == skip || self.textures.contains_key(&idx) || self.in_flight.contains(&idx) {
                 continue;
             }
             let frame = frame.clone();
             let tx = self.res_tx.clone();
+            let live = self.live_generation.clone();
             rayon::spawn(move || {
-                let rgba = crate::image_render::tone_map(
+                if live.load(Ordering::Relaxed) != generation {
+                    return;
+                }
+                let image = crate::image_render::tone_map_image(
                     &frame.pixels,
                     frame.pixel_mask.as_deref(),
                     frame.width,
@@ -71,10 +96,6 @@ impl MonitorPrefetcher {
                     gamma_correction,
                     saturation,
                     colormap,
-                );
-                let image = ColorImage::from_rgba_unmultiplied(
-                    [frame.width as usize, frame.height as usize],
-                    &rgba,
                 );
                 // try_send: never block a rayon thread waiting on a full channel.
                 let _ = tx.try_send(Ready { generation, index: idx, image });
@@ -108,5 +129,6 @@ impl MonitorPrefetcher {
         self.textures.clear();
         self.in_flight.clear();
         self.generation += 1;
+        self.live_generation.store(self.generation, Ordering::Relaxed);
     }
 }
