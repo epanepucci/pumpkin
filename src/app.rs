@@ -595,6 +595,7 @@ impl PumpkinApp {
                     ui.label("Ctrl+Q"); ui.label("Quit"); ui.end_row();
                     ui.label("Tab"); ui.label("Hide / show side panel"); ui.end_row();
                     ui.label("Ctrl+P"); ui.label("Play / stop movie (HDF5 only)"); ui.end_row();
+                    ui.label("Ctrl+R"); ui.label("Toggle resolution rings"); ui.end_row();
                     ui.label("F11"); ui.label("Toggle fullscreen"); ui.end_row();
                     ui.label("?"); ui.label("Show this help"); ui.end_row();
                     ui.label("Hold F + left-drag"); ui.label("Adjust contrast (Foreground)"); ui.end_row();
@@ -2050,10 +2051,14 @@ impl eframe::App for PumpkinApp {
         let fullscreen_shortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F11);
         let save_png_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
         let movie_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::P);
+        let rings_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::R);
 
         // Movie mode never runs against the live monitor or without an HDF5 series.
         if self.movie_playing && (self.connected || self.hdf5_series.is_none()) {
             self.movie_playing = false;
+        }
+        if ctx.input_mut(|i| i.consume_shortcut(&rings_shortcut)) {
+            self.overlays.show_resolution_rings = !self.overlays.show_resolution_rings;
         }
         if ctx.input_mut(|i| i.consume_shortcut(&movie_shortcut)) {
             self.toggle_movie();
