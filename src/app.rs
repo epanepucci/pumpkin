@@ -7,6 +7,7 @@ use tokio::sync::watch;
 
 use crate::contrast::{ContrastState, AUTO_CONTRAST_MIN_SPAN, auto_contrast, auto_contrast_region};
 use crate::frame::{Frame, FrameMetadata};
+use crate::frame_loader::{FrameLoader, LoadKey};
 use crate::hdf5_loader::Hdf5Series;
 use crate::line_profile::{self, LineProfilePeak};
 use crate::image_render::{Colormap, ImageTexture, ToneMapParams};
@@ -79,6 +80,11 @@ pub struct PumpkinApp {
 
     /// Open HDF5 series, if any.
     hdf5_series: Option<Hdf5Series>,
+    /// Background reader/cache for the open series; `None` when no series is open.
+    hdf5_loader: Option<FrameLoader>,
+    /// The frame the user last asked for that has not arrived yet.
+    hdf5_awaiting: Option<LoadKey>,
+    egui_ctx: egui::Context,
     /// Path to the master file (kept for the prefetch thread to open its own handle).
     hdf5_master_path: Option<std::path::PathBuf>,
     /// Current frame index within the HDF5 series (always a multiple of hdf5_grouping).
@@ -177,7 +183,7 @@ impl PumpkinApp {
     }
 
     pub fn new(
-        _cc: &eframe::CreationContext,
+        cc: &eframe::CreationContext,
         dcu_url: String,
         poll_period_ms: u64,
         unfocused_poll_period_ms: u64,
@@ -227,6 +233,9 @@ impl PumpkinApp {
             monitor_prefetch_pending: false,
             on_demand_active: false,
             hdf5_series: None,
+            hdf5_loader: None,
+            hdf5_awaiting: None,
+            egui_ctx: cc.egui_ctx.clone(),
             hdf5_master_path: None,
             hdf5_frame_index: 0,
             hdf5_grouping: 1,
@@ -360,6 +369,8 @@ impl PumpkinApp {
         let first = series.load_frame(0)?;
         self.hdf5_master_path = Some(path.to_path_buf());
         self.hdf5_series = Some(series);
+        self.hdf5_loader = Some(FrameLoader::spawn(path.to_path_buf(), self.egui_ctx.clone()));
+        self.hdf5_awaiting = None;
         self.hdf5_frame_index = 0;
         self.on_new_frame(Arc::new(first));
         self.dozor_data = crate::dozor::find_dozor_json(path)
@@ -388,70 +399,51 @@ impl PumpkinApp {
         self.movie_last_advance = std::time::Instant::now();
     }
 
-    /// Navigate to an HDF5 frame.
-    fn load_hdf5_frame(&mut self, index: usize) {
-        if let Some(ref series) = self.hdf5_series {
-            match series.load_frame(index) {
-                Ok(frame) => self.on_new_frame(Arc::new(frame)),
-                Err(e) => eprintln!("HDF5 frame {index}: {e:#}"),
-            }
+    /// Show the frame (or group of `hdf5_grouping` frames) starting at `start_index`.
+    ///
+    /// Cached frames are shown immediately; otherwise the read happens on the
+    /// loader thread and `poll_hdf5_loader` displays the result when it arrives.
+    fn load_hdf5_grouped(&mut self, start_index: usize) {
+        let key = LoadKey::new(start_index, self.hdf5_grouping, self.effective_saturation());
+        let Some(ref loader) = self.hdf5_loader else { return };
+        if let Some(frame) = loader.get(key) {
+            self.hdf5_awaiting = None;
+            self.on_new_frame(frame);
+            self.prefetch_after(key);
+        } else {
+            self.hdf5_awaiting = Some(key);
+            loader.request(key);
         }
     }
 
-    /// Load and display the group starting at `start_index`, summing `hdf5_grouping` frames.
-    /// Falls back to the single-frame path (with prefetcher) when grouping == 1.
-    fn load_hdf5_grouped(&mut self, start_index: usize) {
-        if self.hdf5_grouping <= 1 {
-            self.load_hdf5_frame(start_index);
-            return;
+    /// Read ahead the group after `key` so stepping or playing forward is instant.
+    fn prefetch_after(&self, key: LoadKey) {
+        let (Some(loader), Some(series)) = (&self.hdf5_loader, &self.hdf5_series) else { return };
+        let next = key.start + key.grouping;
+        if next < series.total_frames {
+            loader.prefetch(LoadKey::new(next, self.hdf5_grouping, self.effective_saturation()));
         }
+    }
 
-        let grouped = {
-            let Some(ref series) = self.hdf5_series else { return };
-            let end = (start_index + self.hdf5_grouping).min(series.total_frames);
-            let mut acc: Option<Vec<u32>> = None;
-            let mut width = 0u32;
-            let mut height = 0u32;
-            let mut metadata = series.series_metadata.clone();
-            let mut pixel_mask: Option<Arc<[u8]>> = None;
-
-            for idx in start_index..end {
-                match series.load_frame(idx) {
-                    Ok(frame) => {
-                        width = frame.width;
-                        height = frame.height;
-                        if idx == start_index {
-                            metadata = frame.metadata.clone();
-                            pixel_mask = frame.pixel_mask.clone();
-                        }
-                        match acc {
-                            None => acc = Some(frame.pixels.iter().enumerate()
-                                .map(|(i, &v)| if frame.is_masked_index(i) { 0 } else { v as u32 })
-                                .collect()),
-                            Some(ref mut a) => {
-                                for (i, (s, &v)) in a.iter_mut().zip(frame.pixels.iter()).enumerate() {
-                                    if !frame.is_masked_index(i) {
-                                        *s += v as u32;
-                                    }
-                                }
-                            }
-                        }
+    /// Display the awaited frame once the loader thread delivers it.
+    fn poll_hdf5_loader(&mut self) {
+        let Some(ref mut loader) = self.hdf5_loader else { return };
+        for loaded in loader.poll() {
+            match loaded.result {
+                Ok(frame) if self.hdf5_awaiting == Some(loaded.key) => {
+                    self.hdf5_awaiting = None;
+                    self.on_new_frame(frame);
+                    self.prefetch_after(loaded.key);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    if self.hdf5_awaiting == Some(loaded.key) {
+                        self.hdf5_awaiting = None;
                     }
-                    Err(e) => eprintln!("HDF5 grouped frame {idx}: {e:#}"),
+                    eprintln!("HDF5 frame {}: {e}", loaded.key.start);
                 }
             }
-            acc.map(|a| (a, width, height, metadata, pixel_mask))
-        };
-
-        if let Some((acc, width, height, metadata, pixel_mask)) = grouped {
-            let effective_sat = self.effective_saturation();
-            let pixels: Vec<u16> = acc.iter().map(|&s| s.min(effective_sat as u32) as u16).collect();
-            let frame = Frame { pixels, pixel_mask, width, height, saturation_value: effective_sat, metadata };
-            self.on_new_frame(Arc::new(frame));
         }
-        // Don't prefetch individual frames in grouped mode — they would overwrite
-        // the grouped texture in the cache and cause the renderer to display the
-        // wrong (non-summed) colorization.
     }
 
     fn effective_saturation(&self) -> u16 {
@@ -804,6 +796,8 @@ impl PumpkinApp {
             // New series: always go live, discard any on-demand or remote HDF5 selection.
             self.on_demand_active = false;
             self.hdf5_series = None;
+            self.hdf5_loader = None;
+            self.hdf5_awaiting = None;
             self.hdf5_master_path = None;
             self.monitor_selected_id = self.monitor_image_ids.last().copied();
             self.monitor_frame_index = self.monitor_frames.len().saturating_sub(1);
@@ -850,6 +844,8 @@ impl PumpkinApp {
     fn connect(&mut self) {
         self.movie_playing = false;
         self.hdf5_series = None;
+        self.hdf5_loader = None;
+        self.hdf5_awaiting = None;
         self.hdf5_master_path = None;
         self.dozor_data = None;
         let cfg = MonitorConfig {
@@ -2063,6 +2059,8 @@ impl eframe::App for PumpkinApp {
                 self.load_hdf5_grouped(self.hdf5_frame_index);
             }
         }
+
+        self.poll_hdf5_loader();
 
         // Poll monitor prefetcher and upload any completed textures.
         if self.monitor_prefetcher.poll(ctx) {
