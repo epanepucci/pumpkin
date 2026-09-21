@@ -565,6 +565,7 @@ impl PumpkinApp {
                     ui.label("Left / Right"); ui.label("Previous / Next frame"); ui.end_row();
                     ui.label("Ctrl+O"); ui.label("Open HDF5 master"); ui.end_row();
                     ui.label("Ctrl+G"); ui.label("Go to frame number"); ui.end_row();
+                    ui.label("Ctrl+S"); ui.label("Save current image as PNG"); ui.end_row();
                     ui.label("Ctrl+Q"); ui.label("Quit"); ui.end_row();
                     ui.label("Tab"); ui.label("Hide / show side panel"); ui.end_row();
                     ui.label("Ctrl+P"); ui.label("Play / stop movie (HDF5 only)"); ui.end_row();
@@ -603,7 +604,7 @@ impl PumpkinApp {
                     }
                     let save_enabled = self.frame.is_some();
                     if ui.add_enabled(save_enabled, egui::Button::new("Save PNG"))
-                        .on_hover_text("Save current image with overlays as PNG")
+                        .on_hover_text("Save current image with overlays as PNG (Ctrl+S)")
                         .clicked()
                     {
                         self.save_png();
