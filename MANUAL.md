@@ -158,10 +158,13 @@ proposal, then its date and sample folders, and click a dataset to open it. Use
 the filter box to narrow long lists.
 
 At the top of the data browser is **Recent monitored**: the datasets that
-appeared while Pumpkin was connected to the detector. Newest first, up to 30,
-with a note of how long ago each was seen. Click one to open it. Entries whose
+appeared while Pumpkin was connected to the detector. Newest first, up to 20
+by default, with a note of how long ago each was seen. Click one to open it. Entries whose
 file can't be found on disk are greyed out and struck through. The list is
-remembered between sessions.
+remembered between sessions. The limit can be changed with
+`recent_monitored_max` in the `[data_browser]` section of the config file, or
+with **Recent monitored files kept** in the Actions dialog (lowering it drops
+the oldest entries; the dialog setting is not written back to the config file).
 
 ### Live from the detector
 

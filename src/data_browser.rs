@@ -669,11 +669,12 @@ impl DataBrowser {
         } else {
             Self::start_group_fetch(source.clone())
         };
+        let recent = RecentMonitored::load(cfg.recent_monitored_max);
         Self {
             state,
             proposal_filter: String::new(),
             cfg,
-            recent: RecentMonitored::load(),
+            recent,
             exists_cache: Default::default(),
         }
     }
@@ -728,6 +729,16 @@ impl DataBrowser {
                 proposals.iter_mut().fold(false, |acc, p| acc | p.poll())
             }
         }
+    }
+
+    /// How many files the "Recent monitored" list keeps.
+    pub fn recent_max(&self) -> usize {
+        self.recent.max_entries()
+    }
+
+    /// Change how many files the "Recent monitored" list keeps; older ones are dropped.
+    pub fn set_recent_max(&mut self, max: usize) {
+        self.recent.set_max_entries(max);
     }
 
     /// Remember that the series `series_id` (written with `name_pattern`) was monitored.

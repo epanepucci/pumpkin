@@ -136,6 +136,9 @@ Each proposal maps to a directory under `base_path`. Below proposals, the browse
 ### Configuration
 
 ```toml
+[data_browser]
+recent_monitored_max = 20   # "Recent monitored" files remembered (default 20; 0 = none)
+
 [data_browser.proposal_source]
 base_path          = "/data/visitors/biomax"
 # OS group suffix used to identify proposals: "20240001-group" → proposal "20240001"

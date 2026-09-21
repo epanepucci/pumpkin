@@ -636,6 +636,18 @@ impl PumpkinApp {
                 });
                 ui.checkbox(&mut self.visible_only, "Only visible pixels")
                     .on_hover_text("Save/copy just the part of the image shown in the viewport");
+                if let Some(db) = self.data_browser.as_mut() {
+                    let mut max = db.recent_max();
+                    ui.horizontal(|ui| {
+                        ui.label("Recent monitored files kept:");
+                        if ui.add(egui::DragValue::new(&mut max).range(0..=200))
+                            .on_hover_text("Older entries are dropped from the list and from disk (config: recent_monitored_max)")
+                            .changed()
+                        {
+                            db.set_recent_max(max);
+                        }
+                    });
+                }
 
                 ui.add_space(8.0);
                 ui.heading("Connection");

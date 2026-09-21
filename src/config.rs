@@ -246,10 +246,17 @@ impl Default for DatasetConfig {
 /// [data_browser.datasets]
 /// file_suffix   = "_master.h5"
 /// search_depth  = 2
+///
+/// # Table-level key; must come before the sub-tables above in the file.
+/// recent_monitored_max = 20   # how many "Recent monitored" files to remember
 /// ```
 #[derive(serde::Deserialize, Clone)]
 #[serde(default)]
 pub struct DataBrowserConfig {
+    /// How many files the "Recent monitored" list keeps, in memory and on disk.
+    /// Default 20; 0 keeps none.
+    #[serde(alias = "recent-monitored-max")]
+    pub recent_monitored_max: usize,
     pub proposal_source: ProposalSource,
     /// Ordered directory levels between the proposal root and the dataset files.
     /// Empty means datasets live directly under each proposal directory.
@@ -260,6 +267,7 @@ pub struct DataBrowserConfig {
 impl Default for DataBrowserConfig {
     fn default() -> Self {
         Self {
+            recent_monitored_max: crate::recent_files::DEFAULT_MAX_ENTRIES,
             proposal_source: ProposalSource::default(),
             levels: vec![
                 // Level 0: visit dates — 8-digit dirs directly under the proposal.

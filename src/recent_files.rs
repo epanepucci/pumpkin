@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-/// Most recent files kept in the list (and on disk).
-const MAX_ENTRIES: usize = 30;
+/// Default number of recent files kept in the list (and on disk).
+pub const DEFAULT_MAX_ENTRIES: usize = 20;
 
 /// A dataset master file that was seen while monitoring the detector.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
@@ -22,19 +22,37 @@ struct Stored {
 pub struct RecentMonitored {
     entries: Vec<MonitoredFile>,
     path: Option<PathBuf>,
+    /// At most this many entries are kept, in memory and on disk.
+    max_entries: usize,
 }
 
 impl RecentMonitored {
-    /// Load from `~/.config/pumpkin/monitored_files.json`. A missing or corrupt
-    /// file yields an empty list.
-    pub fn load() -> Self {
+    /// Load from `~/.config/pumpkin/monitored_files.json`, keeping at most
+    /// `max_entries` (newest first). A missing or corrupt file yields an empty
+    /// list. A longer list on disk is trimmed the next time it is saved.
+    pub fn load(max_entries: usize) -> Self {
         let path = crate::config::config_dir().map(|d| d.join("monitored_files.json"));
         let entries = path
             .as_ref()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .map(|text| Self::parse(&text))
             .unwrap_or_default();
-        Self { entries, path }
+        let mut list = Self { entries, path, max_entries };
+        list.entries.truncate(max_entries);
+        list
+    }
+
+    pub fn max_entries(&self) -> usize {
+        self.max_entries
+    }
+
+    /// Change the limit, dropping the oldest entries beyond it and saving if any were dropped.
+    pub fn set_max_entries(&mut self, max_entries: usize) {
+        self.max_entries = max_entries;
+        if self.entries.len() > max_entries {
+            self.entries.truncate(max_entries);
+            self.save();
+        }
     }
 
     pub fn entries(&self) -> &[MonitoredFile] {
@@ -49,7 +67,7 @@ impl RecentMonitored {
             self.entries.remove(pos);
         }
         self.entries.insert(0, MonitoredFile { path, seen_unix: now_unix });
-        self.entries.truncate(MAX_ENTRIES);
+        self.entries.truncate(self.max_entries);
         self.save();
     }
 
@@ -70,9 +88,7 @@ impl RecentMonitored {
     }
 
     fn parse(text: &str) -> Vec<MonitoredFile> {
-        let mut entries = serde_json::from_str::<Stored>(text).map(|s| s.entries).unwrap_or_default();
-        entries.truncate(MAX_ENTRIES);
-        entries
+        serde_json::from_str::<Stored>(text).map(|s| s.entries).unwrap_or_default()
     }
 }
 
@@ -105,7 +121,7 @@ mod tests {
     use super::*;
 
     fn list() -> RecentMonitored {
-        RecentMonitored { entries: Vec::new(), path: None }
+        RecentMonitored { entries: Vec::new(), path: None, max_entries: DEFAULT_MAX_ENTRIES }
     }
 
     #[test]
@@ -126,11 +142,28 @@ mod tests {
         assert_eq!(paths, ["/d/a_master.h5", "/d/b_master.h5"]);
         assert_eq!(l.entries()[0].seen_unix, 300);
 
-        for i in 0..MAX_ENTRIES + 5 {
+        for i in 0..DEFAULT_MAX_ENTRIES + 5 {
             l.record(&format!("/d/x{i}"), 1, 400 + i as u64);
         }
-        assert_eq!(l.entries().len(), MAX_ENTRIES);
-        assert!(l.entries()[0].path.contains(&format!("x{}", MAX_ENTRIES + 4)));
+        assert_eq!(l.entries().len(), DEFAULT_MAX_ENTRIES);
+        assert!(l.entries()[0].path.contains(&format!("x{}", DEFAULT_MAX_ENTRIES + 4)));
+    }
+
+    #[test]
+    fn lowering_the_limit_drops_the_oldest() {
+        let mut l = list();
+        for i in 0..5 {
+            l.record(&format!("/d/x{i}"), 1, i as u64);
+        }
+        l.set_max_entries(2);
+        let paths: Vec<_> = l.entries().iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["/d/x4_master.h5", "/d/x3_master.h5"]);
+        l.record("/d/new", 1, 10); // the new limit also applies to later records
+        assert_eq!(l.entries().len(), 2);
+        l.set_max_entries(10); // raising it doesn't bring anything back
+        assert_eq!(l.entries().len(), 2);
+        l.set_max_entries(0);
+        assert!(l.entries().is_empty());
     }
 
     #[test]
