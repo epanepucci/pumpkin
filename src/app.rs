@@ -117,6 +117,10 @@ pub struct PumpkinApp {
     show_help: bool,
     show_panel: bool,
     show_actions: bool,
+    /// Output size of "Save PNG" as a percentage of the frame size.
+    save_scale: u32,
+    /// Output size of "Copy image" as a percentage of the frame size.
+    copy_scale: u32,
 
     start_time: std::time::Instant,
 
@@ -256,6 +260,8 @@ impl PumpkinApp {
             show_help: false,
             show_panel: true,
             show_actions: false,
+            save_scale: 100,
+            copy_scale: 50,
             start_time: std::time::Instant::now(),
             splash_folder,
             splash_texture: None,
@@ -566,6 +572,7 @@ impl PumpkinApp {
                     ui.label("Ctrl+O"); ui.label("Open HDF5 master"); ui.end_row();
                     ui.label("Ctrl+G"); ui.label("Go to frame number"); ui.end_row();
                     ui.label("Ctrl+S"); ui.label("Save current image as PNG"); ui.end_row();
+                    ui.label("Ctrl+C"); ui.label("Copy current image to clipboard"); ui.end_row();
                     ui.label("Ctrl+Q"); ui.label("Quit"); ui.end_row();
                     ui.label("Tab"); ui.label("Hide / show side panel"); ui.end_row();
                     ui.label("Ctrl+P"); ui.label("Play / stop movie (HDF5 only)"); ui.end_row();
@@ -609,6 +616,20 @@ impl PumpkinApp {
                     {
                         self.save_png();
                     }
+                    if ui.add_enabled(save_enabled, egui::Button::new("Copy image"))
+                        .on_hover_text("Copy current image with overlays to the clipboard (Ctrl+C)")
+                        .clicked()
+                    {
+                        self.copy_image(ctx);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Save scaling factor:");
+                    ui.add(egui::Slider::new(&mut self.save_scale, 10..=100).step_by(10.0).suffix("%"));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Copy scaling factor:");
+                    ui.add(egui::Slider::new(&mut self.copy_scale, 10..=100).step_by(10.0).suffix("%"));
                 });
 
                 ui.add_space(8.0);
@@ -899,10 +920,22 @@ impl PumpkinApp {
             self.tone_params(),
             &self.overlays,
             &save_dir,
+            self.save_scale,
         ) {
             Ok(path) => eprintln!("Saved PNG: {}", path.display()),
             Err(e)   => eprintln!("PNG export failed: {e:#}"),
         }
+    }
+
+    fn copy_image(&self, ctx: &egui::Context) {
+        let Some(ref frame) = self.frame else { return };
+        ctx.copy_image(crate::png_export::render_color_image(
+            frame,
+            self.tone_params(),
+            &self.overlays,
+            self.copy_scale,
+        ));
+        eprintln!("Copied image to clipboard");
     }
 
     fn fetch_monitor_frame_on_demand(&self, image_id: u64) {
@@ -2018,6 +2051,20 @@ impl eframe::App for PumpkinApp {
             println!("saving PNG...");
 
             self.save_png();
+        }
+
+        // egui-winit turns Ctrl+C (with or without Shift) into Event::Copy and never
+        // emits the key event, so a KeyboardShortcut for it can't match. Use the event
+        // instead, unless a text field is focused and wants it for its own copy.
+        if !ctx.wants_keyboard_input() {
+            let copy_requested = ctx.input_mut(|i| {
+                let before = i.events.len();
+                i.events.retain(|e| !matches!(e, egui::Event::Copy));
+                i.events.len() != before
+            });
+            if copy_requested {
+                self.copy_image(ctx);
+            }
         }
 
         if ctx.input_mut(|i| i.consume_shortcut(&quit_shortcut)) {

@@ -24,14 +24,8 @@ pub fn derive_filename(frame: &Frame) -> String {
     }
 }
 
-/// Tone-map `frame`, draw overlays onto the RGBA buffer, then save as PNG with
-/// metadata tEXt chunks.  Returns the full path of the written file.
-pub fn export_png(
-    frame: &Frame,
-    params: ToneMapParams,
-    overlays: &OverlaySettings,
-    save_dir: &Path,
-) -> anyhow::Result<PathBuf> {
+/// Tone-map `frame` and draw the enabled overlays onto the RGBA buffer.
+pub fn render_rgba(frame: &Frame, params: ToneMapParams, overlays: &OverlaySettings) -> Vec<u8> {
     let w = frame.width;
     let h = frame.height;
 
@@ -52,6 +46,75 @@ pub fn export_png(
     if overlays.show_resolution_rings {
         draw_resolution_rings(&mut rgba, w, h, frame, overlays);
     }
+
+    rgba
+}
+
+/// Output size for `percent` (clamped to 1..=100) of a `w` x `h` image; never below 1 px.
+fn scaled_size(w: u32, h: u32, percent: u32) -> (u32, u32) {
+    let pct = percent.clamp(1, 100) as f64 / 100.0;
+    (
+        ((w as f64 * pct).round() as u32).max(1),
+        ((h as f64 * pct).round() as u32).max(1),
+    )
+}
+
+/// Shrink an RGBA buffer to `nw` x `nh` by averaging the source pixels covered
+/// by each output pixel (box filter).
+fn downscale_area(rgba: Vec<u8>, w: u32, h: u32, nw: u32, nh: u32) -> Vec<u8> {
+    if (nw, nh) == (w, h) {
+        return rgba;
+    }
+    let (w, h, nw, nh) = (w as usize, h as usize, nw as usize, nh as usize);
+    let mut out = Vec::with_capacity(nw * nh * 4);
+    for oy in 0..nh {
+        let y0 = oy * h / nh;
+        let y1 = ((oy + 1) * h).div_ceil(nh).clamp(y0 + 1, h);
+        for ox in 0..nw {
+            let x0 = ox * w / nw;
+            let x1 = ((ox + 1) * w).div_ceil(nw).clamp(x0 + 1, w);
+            let mut sum = [0u32; 4];
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let i = (y * w + x) * 4;
+                    for c in 0..4 {
+                        sum[c] += rgba[i + c] as u32;
+                    }
+                }
+            }
+            let n = ((y1 - y0) * (x1 - x0)) as u32;
+            for c in sum {
+                out.push(((c + n / 2) / n) as u8);
+            }
+        }
+    }
+    out
+}
+
+/// Render `frame` (see [`render_rgba`]) at `percent` of its size as an egui
+/// image, e.g. for the clipboard.
+pub fn render_color_image(
+    frame: &Frame,
+    params: ToneMapParams,
+    overlays: &OverlaySettings,
+    percent: u32,
+) -> egui::ColorImage {
+    let (nw, nh) = scaled_size(frame.width, frame.height, percent);
+    let rgba = downscale_area(render_rgba(frame, params, overlays), frame.width, frame.height, nw, nh);
+    egui::ColorImage::from_rgba_unmultiplied([nw as usize, nh as usize], &rgba)
+}
+
+/// Render `frame` with overlays, shrink it to `percent` of its size, then save as PNG with
+/// metadata tEXt chunks. Returns the full path of the written file.
+pub fn export_png(
+    frame: &Frame,
+    params: ToneMapParams,
+    overlays: &OverlaySettings,
+    save_dir: &Path,
+    percent: u32,
+) -> anyhow::Result<PathBuf> {
+    let (w, h) = scaled_size(frame.width, frame.height, percent);
+    let rgba = downscale_area(render_rgba(frame, params, overlays), frame.width, frame.height, w, h);
 
     // --- PNG metadata text chunks ---
     let meta = &frame.metadata;
@@ -165,5 +228,36 @@ fn draw_resolution_rings(rgba: &mut [u8], width: u32, height: u32, frame: &Frame
     for ring in &overlays.resolution_rings {
         let Some(radius_px) = geometry.ring_radius_px(ring.d_spacing) else { continue };
         draw_circle(rgba, width, height, cx as f32, cy as f32, radius_px as f32, color, sw);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scaled_size_rounds_and_clamps() {
+        assert_eq!(scaled_size(100, 50, 50), (50, 25));
+        assert_eq!(scaled_size(100, 50, 100), (100, 50));
+        assert_eq!(scaled_size(3, 3, 10), (1, 1));
+        assert_eq!(scaled_size(100, 50, 0), (1, 1)); // 0 is treated as 1%
+        assert_eq!(scaled_size(100, 50, 250), (100, 50));
+    }
+
+    #[test]
+    fn downscale_averages_blocks() {
+        // 2x2 image: black, white / white, black -> 1x1 mid grey
+        let px = |v: u8| [v, v, v, 255];
+        let mut img = Vec::new();
+        for v in [0, 255, 255, 0] {
+            img.extend_from_slice(&px(v));
+        }
+        assert_eq!(downscale_area(img, 2, 2, 1, 1), vec![128, 128, 128, 255]);
+    }
+
+    #[test]
+    fn downscale_same_size_is_identity() {
+        let img: Vec<u8> = (0..16).collect();
+        assert_eq!(downscale_area(img.clone(), 2, 2, 2, 2), img);
     }
 }
