@@ -121,6 +121,8 @@ pub struct PumpkinApp {
     save_scale: u32,
     /// Output size of "Copy image" as a percentage of the frame size.
     copy_scale: u32,
+    /// Save/copy only the part of the image currently visible in the viewport.
+    visible_only: bool,
 
     start_time: std::time::Instant,
 
@@ -262,6 +264,7 @@ impl PumpkinApp {
             show_actions: false,
             save_scale: 100,
             copy_scale: 50,
+            visible_only: false,
             start_time: std::time::Instant::now(),
             splash_folder,
             splash_texture: None,
@@ -631,6 +634,8 @@ impl PumpkinApp {
                     ui.label("Copy scaling factor:");
                     ui.add(egui::Slider::new(&mut self.copy_scale, 10..=100).step_by(10.0).suffix("%"));
                 });
+                ui.checkbox(&mut self.visible_only, "Only visible pixels")
+                    .on_hover_text("Save/copy just the part of the image shown in the viewport");
 
                 ui.add_space(8.0);
                 ui.heading("Connection");
@@ -910,8 +915,37 @@ impl PumpkinApp {
         false
     }
 
+    /// Image-pixel region currently visible in the viewport, clipped to the frame.
+    /// `Ok(None)` means "use the whole image" (option off); `Err` means nothing is visible.
+    fn output_crop(&self, frame: &Frame) -> Result<Option<crate::png_export::CropRect>, &'static str> {
+        if !self.visible_only {
+            return Ok(None);
+        }
+        let vp = self.last_viewport_rect;
+        if !vp.is_positive() {
+            return Err("viewport size unknown");
+        }
+        let min = self.view.screen_to_image(vp.min, vp.min);
+        let max = self.view.screen_to_image(vp.max, vp.min);
+        let x0 = min.x.floor().max(0.0) as u32;
+        let y0 = min.y.floor().max(0.0) as u32;
+        let x1 = (max.x.ceil().max(0.0) as u32).min(frame.width);
+        let y1 = (max.y.ceil().max(0.0) as u32).min(frame.height);
+        if x1 <= x0 || y1 <= y0 {
+            return Err("no part of the image is visible");
+        }
+        Ok(Some(crate::png_export::CropRect { x0, y0, x1, y1 }))
+    }
+
     fn save_png(&self) {
         let Some(ref frame) = self.frame else { return };
+        let crop = match self.output_crop(frame) {
+            Ok(c) => c,
+            Err(why) => {
+                eprintln!("PNG export skipped: {why}");
+                return;
+            }
+        };
         let save_dir = std::env::var_os("HOME")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("."));
@@ -920,6 +954,7 @@ impl PumpkinApp {
             self.tone_params(),
             &self.overlays,
             &save_dir,
+            crop,
             self.save_scale,
         ) {
             Ok(path) => eprintln!("Saved PNG: {}", path.display()),
@@ -929,10 +964,18 @@ impl PumpkinApp {
 
     fn copy_image(&self, ctx: &egui::Context) {
         let Some(ref frame) = self.frame else { return };
+        let crop = match self.output_crop(frame) {
+            Ok(c) => c,
+            Err(why) => {
+                eprintln!("Copy skipped: {why}");
+                return;
+            }
+        };
         ctx.copy_image(crate::png_export::render_color_image(
             frame,
             self.tone_params(),
             &self.overlays,
+            crop,
             self.copy_scale,
         ));
         eprintln!("Copied image to clipboard");

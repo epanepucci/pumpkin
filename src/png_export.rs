@@ -91,30 +91,77 @@ fn downscale_area(rgba: Vec<u8>, w: u32, h: u32, nw: u32, nh: u32) -> Vec<u8> {
     out
 }
 
-/// Render `frame` (see [`render_rgba`]) at `percent` of its size as an egui
-/// image, e.g. for the clipboard.
+/// A sub-rectangle of the frame in image pixels: `x0..x1` by `y0..y1`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CropRect {
+    pub x0: u32,
+    pub y0: u32,
+    pub x1: u32,
+    pub y1: u32,
+}
+
+impl CropRect {
+    pub fn width(&self) -> u32 {
+        self.x1 - self.x0
+    }
+    pub fn height(&self) -> u32 {
+        self.y1 - self.y0
+    }
+}
+
+/// Copy the `crop` region out of a `w`-pixel-wide RGBA buffer.
+fn crop_rgba(rgba: &[u8], w: u32, crop: CropRect) -> Vec<u8> {
+    let mut out = Vec::with_capacity((crop.width() * crop.height() * 4) as usize);
+    for y in crop.y0..crop.y1 {
+        let start = ((y * w + crop.x0) * 4) as usize;
+        out.extend_from_slice(&rgba[start..start + (crop.width() * 4) as usize]);
+    }
+    out
+}
+
+/// Render `frame` with overlays, optionally crop it to `crop`, then shrink to
+/// `percent` of the (cropped) size. Returns the RGBA buffer and its width/height.
+fn render_output(
+    frame: &Frame,
+    params: ToneMapParams,
+    overlays: &OverlaySettings,
+    crop: Option<CropRect>,
+    percent: u32,
+) -> (Vec<u8>, u32, u32) {
+    let full = CropRect { x0: 0, y0: 0, x1: frame.width, y1: frame.height };
+    let crop = crop.unwrap_or(full);
+    let mut rgba = render_rgba(frame, params, overlays);
+    if crop != full {
+        rgba = crop_rgba(&rgba, frame.width, crop);
+    }
+    let (w, h) = scaled_size(crop.width(), crop.height(), percent);
+    let rgba = downscale_area(rgba, crop.width(), crop.height(), w, h);
+    (rgba, w, h)
+}
+
+/// Render `frame` (see [`render_output`]) as an egui image, e.g. for the clipboard.
 pub fn render_color_image(
     frame: &Frame,
     params: ToneMapParams,
     overlays: &OverlaySettings,
+    crop: Option<CropRect>,
     percent: u32,
 ) -> egui::ColorImage {
-    let (nw, nh) = scaled_size(frame.width, frame.height, percent);
-    let rgba = downscale_area(render_rgba(frame, params, overlays), frame.width, frame.height, nw, nh);
-    egui::ColorImage::from_rgba_unmultiplied([nw as usize, nh as usize], &rgba)
+    let (rgba, w, h) = render_output(frame, params, overlays, crop, percent);
+    egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba)
 }
 
-/// Render `frame` with overlays, shrink it to `percent` of its size, then save as PNG with
+/// Render `frame` with overlays (see [`render_output`]), then save as PNG with
 /// metadata tEXt chunks. Returns the full path of the written file.
 pub fn export_png(
     frame: &Frame,
     params: ToneMapParams,
     overlays: &OverlaySettings,
     save_dir: &Path,
+    crop: Option<CropRect>,
     percent: u32,
 ) -> anyhow::Result<PathBuf> {
-    let (w, h) = scaled_size(frame.width, frame.height, percent);
-    let rgba = downscale_area(render_rgba(frame, params, overlays), frame.width, frame.height, w, h);
+    let (rgba, w, h) = render_output(frame, params, overlays, crop, percent);
 
     // --- PNG metadata text chunks ---
     let meta = &frame.metadata;
@@ -126,13 +173,17 @@ pub fn export_png(
             if let Some(v) = $opt { chunks.push(($key.into(), format!($fmt, v))); }
         };
     }
-    chunk!("BeamCenterX",      meta.beam_center_x,      "{:.4} px");
-    chunk!("BeamCenterY",      meta.beam_center_y,      "{:.4} px");
+    // Output pixel = (source pixel - crop origin) * sx, so geometry follows the crop/scale.
+    let src = crop.unwrap_or(CropRect { x0: 0, y0: 0, x1: frame.width, y1: frame.height });
+    let sx = w as f64 / src.width() as f64;
+    let sy = h as f64 / src.height() as f64;
+    chunk!("BeamCenterX",      meta.beam_center_x.map(|v| (v - src.x0 as f64) * sx), "{:.4} px");
+    chunk!("BeamCenterY",      meta.beam_center_y.map(|v| (v - src.y0 as f64) * sy), "{:.4} px");
     chunk!("DetectorDistance", meta.detector_distance,  "{:.6} m");
     chunk!("Wavelength",       meta.wavelength,         "{:.6} Å");
     chunk!("IncidentEnergy",   meta.incident_energy,    "{:.3} eV");
-    chunk!("PixelSizeX",       meta.pixel_size_x,       "{:.3e} m");
-    chunk!("PixelSizeY",       meta.pixel_size_y,       "{:.3e} m");
+    chunk!("PixelSizeX",       meta.pixel_size_x.map(|v| v / sx), "{:.3e} m");
+    chunk!("PixelSizeY",       meta.pixel_size_y.map(|v| v / sy), "{:.3e} m");
     chunk!("ExposureTime",     meta.exposure_time,      "{:.6} s");
     chunk!("Nimages",          meta.nimages,            "{}");
     chunk!("Ntrigger",         meta.ntrigger,           "{}");
@@ -141,6 +192,12 @@ pub fn export_png(
     chunk!("SeriesId",         meta.series_id,          "{}");
     if let Some(ref np) = meta.name_pattern {
         chunks.push(("NamePattern".into(), np.clone()));
+    }
+    if let Some(c) = crop {
+        chunks.push((
+            "CropRegion".into(),
+            format!("x={} y={} w={} h={} (source pixels)", c.x0, c.y0, c.width(), c.height()),
+        ));
     }
 
     // --- Write file ---
@@ -253,6 +310,18 @@ mod tests {
             img.extend_from_slice(&px(v));
         }
         assert_eq!(downscale_area(img, 2, 2, 1, 1), vec![128, 128, 128, 255]);
+    }
+
+    #[test]
+    fn crop_extracts_region() {
+        // 3x2 image, one distinct byte per pixel in the R channel.
+        let mut img = Vec::new();
+        for v in 0..6u8 {
+            img.extend_from_slice(&[v, 0, 0, 255]);
+        }
+        let out = crop_rgba(&img, 3, CropRect { x0: 1, y0: 0, x1: 3, y1: 2 });
+        let reds: Vec<u8> = out.chunks_exact(4).map(|p| p[0]).collect();
+        assert_eq!(reds, vec![1, 2, 4, 5]);
     }
 
     #[test]
