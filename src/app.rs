@@ -1228,8 +1228,11 @@ impl PumpkinApp {
         ui.separator();
         ui.heading("Contrast");
         let (run_auto, run_region) = ui.horizontal(|ui| {
-            ui.checkbox(&mut self.contrast.auto, "Auto");
-            let run = ui.add_enabled(self.frame.is_some(), egui::Button::new("Run")).clicked();
+            ui.checkbox(&mut self.contrast.auto, "Auto")
+                .on_hover_text("Recompute Background/Foreground from the whole image on every new frame");
+            let run = ui.add_enabled(self.frame.is_some(), egui::Button::new("Run"))
+                .on_hover_text("Recompute Background/Foreground from the whole image now")
+                .clicked();
             let region = ui.add_enabled(self.frame.is_some(), egui::Button::new("Region"))
                 .on_hover_text("Auto contrast from visible region")
                 .clicked();
@@ -1261,7 +1264,7 @@ impl PumpkinApp {
                 .smallest_positive(1.0)
                 .fixed_decimals(1)
                 .text("Background"),
-        );
+        ).on_hover_text("Pixel value mapped to the darkest colour (black point)");
         ui.add_enabled(
             !self.contrast.auto,
             egui::Slider::new(&mut self.contrast.vmax, self.contrast.vmin..=frame_max)
@@ -1269,21 +1272,22 @@ impl PumpkinApp {
                 .smallest_positive(1.0)
                 .fixed_decimals(1)
                 .text("Foreground"),
-        );
+        ).on_hover_text("Pixel value mapped to the brightest colour (white point); capped by the saturation threshold");
         ui.add(
             egui::Slider::new(&mut self.contrast.gamma_correction, 1.0..=10.0)
                 .step_by(0.1)
                 .text("Gamma"),
-        );
+        ).on_hover_text("Gamma correction applied after the colormap");
 
         // Saturation override
         let sat_changed = ui.horizontal(|ui| {
             let before = (self.saturation_override_enabled, self.saturation_override_value);
-            ui.checkbox(&mut self.saturation_override_enabled, "Force saturation");
+            ui.checkbox(&mut self.saturation_override_enabled, "Force saturation")
+                .on_hover_text("Override the detector-reported saturation threshold used to clip overflowed pixels");
             ui.add_enabled(
                 self.saturation_override_enabled,
                 egui::DragValue::new(&mut self.saturation_override_value).range(1..=u16::MAX),
-            );
+            ).on_hover_text("Saturation threshold (counts); pixels at or above this render as black");
             (self.saturation_override_enabled, self.saturation_override_value) != before
         }).inner;
         if sat_changed {
@@ -1296,12 +1300,13 @@ impl PumpkinApp {
 
         // Histogram
         ui.horizontal(|ui| {
-            ui.checkbox(&mut self.contrast.histogram_log, "Log");
+            ui.checkbox(&mut self.contrast.histogram_log, "Log bins")
+                .on_hover_text("Scale histogram bar heights logarithmically (display only, does not affect the image)");
             ui.add(
                 egui::Slider::new(&mut self.contrast.histogram_bins, 32..=512)
                     .step_by(32.0)
                     .text("Bins"),
-            );
+            ).on_hover_text("Number of histogram bins");
         });
         let hist_height = 80.0;
         let (rect, _) =
@@ -1368,7 +1373,9 @@ impl PumpkinApp {
                 for &cmap in Colormap::ALL {
                     ui.selectable_value(&mut self.contrast.colormap, cmap, cmap.label());
                 }
-            });
+            })
+            .response
+            .on_hover_text("Colour palette used to render pixel intensities");
 
         // Colormap preview bar — full panel width, 1 px per sample.
         let bar_height = 16.0;
