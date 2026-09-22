@@ -5,19 +5,38 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
-pub struct RemoteCmd {
-    pub file: PathBuf,
-    pub frame: usize,
+pub enum RemoteCmd {
+    LoadFrame { file: PathBuf, frame: usize },
+    PlayMovie { file: PathBuf, fps: u32 },
 }
 
-/// Start a TCP listener on `port` that accepts newline-delimited JSON commands
-/// of the form `{"file": "/path/to/master.h5", "frame": 42}` and forwards
-/// them to the returned channel receiver.
-pub fn start_remote_listener(port: u16) -> mpsc::UnboundedReceiver<RemoteCmd> {
+/// A `RemoteCmd` received over TCP, paired with a channel the app uses to report
+/// back whether the command succeeded once it's actually been applied.
+pub struct RemoteRequest {
+    pub cmd: RemoteCmd,
+    pub ack: oneshot::Sender<Result<(), String>>,
+}
+
+/// How long a TCP client waits for the app to apply a command before we give up
+/// and report a timeout on that connection.
+const ACK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Start a TCP listener on `port` that accepts newline-delimited JSON commands,
+/// forwards them to the returned channel receiver, and writes a one-line
+/// acknowledgement (`ok` or `error: <message>`) back to the client once the app
+/// has applied each command. Two command shapes are recognised:
+/// - `{"file": "/path/to/master.h5", "frame": 42}` — load and display a frame.
+/// - `{"file": "/path/to/master.h5", "movie": 10}` — load the series and start
+///   movie playback at the given fps (`0` stops playback and resumes monitoring).
+///
+/// `ctx` is used to wake the UI thread the moment a command is queued — without
+/// it, an idle app (no periodic repaints, e.g. not connected to the live monitor)
+/// would only notice the command on the next unrelated repaint (e.g. mouse input).
+pub fn start_remote_listener(port: u16, ctx: egui::Context) -> mpsc::UnboundedReceiver<RemoteRequest> {
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         let addr = format!("0.0.0.0:{port}");
@@ -36,19 +55,38 @@ pub fn start_remote_listener(port: u16) -> mpsc::UnboundedReceiver<RemoteCmd> {
                 continue;
             };
             let tx = tx.clone();
+            let ctx = ctx.clone();
             tokio::spawn(async move {
-                let reader = BufReader::new(stream);
+                let (read_half, mut write_half) = stream.into_split();
+                let reader = BufReader::new(read_half);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     let line = line.trim().to_string();
                     if line.is_empty() {
                         continue;
                     }
-                    match parse_cmd(&line) {
+                    let reply = match parse_cmd(&line) {
                         Some(cmd) => {
-                            let _ = tx.send(cmd);
+                            let (ack_tx, ack_rx) = oneshot::channel();
+                            if tx.send(RemoteRequest { cmd, ack: ack_tx }).is_err() {
+                                "error: app is shutting down\n".to_string()
+                            } else {
+                                ctx.request_repaint();
+                                match tokio::time::timeout(ACK_TIMEOUT, ack_rx).await {
+                                    Ok(Ok(Ok(()))) => "ok\n".to_string(),
+                                    Ok(Ok(Err(msg))) => format!("error: {msg}\n"),
+                                    Ok(Err(_)) => "error: app closed without responding\n".to_string(),
+                                    Err(_) => "error: timed out waiting for app\n".to_string(),
+                                }
+                            }
                         }
-                        None => eprintln!("Remote: unrecognised command from {peer}: {line}"),
+                        None => {
+                            eprintln!("Remote: unrecognised command from {peer}: {line}");
+                            format!("error: unrecognised command: {line}\n")
+                        }
+                    };
+                    if write_half.write_all(reply.as_bytes()).await.is_err() {
+                        break;
                     }
                 }
             });
@@ -59,12 +97,15 @@ pub fn start_remote_listener(port: u16) -> mpsc::UnboundedReceiver<RemoteCmd> {
 
 pub(crate) fn parse_cmd(line: &str) -> Option<RemoteCmd> {
     #[derive(serde::Deserialize)]
-    struct Raw {
-        file: String,
-        frame: usize,
+    #[serde(untagged)]
+    enum Raw {
+        Movie { file: String, movie: u32 },
+        Frame { file: String, frame: usize },
     }
-    let raw: Raw = serde_json::from_str(line).ok()?;
-    Some(RemoteCmd { file: PathBuf::from(raw.file), frame: raw.frame })
+    match serde_json::from_str(line).ok()? {
+        Raw::Frame { file, frame } => Some(RemoteCmd::LoadFrame { file: PathBuf::from(file), frame }),
+        Raw::Movie { file, movie } => Some(RemoteCmd::PlayMovie { file: PathBuf::from(file), fps: movie }),
+    }
 }
 
 pub struct CommandsFileConfig {
@@ -95,19 +136,27 @@ impl Drop for CommandsFileWatcher {
     }
 }
 
+/// `ctx` is used to wake the UI thread as soon as a command is read from the
+/// file — see `start_remote_listener` for why this matters.
 pub fn start_commands_file_watcher(
     cfg: CommandsFileConfig,
+    ctx: egui::Context,
 ) -> (CommandsFileWatcher, mpsc::UnboundedReceiver<RemoteCmd>) {
     let (tx, rx) = mpsc::unbounded_channel();
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = stop.clone();
     let join = std::thread::spawn(move || {
-        commands_file_thread(cfg, tx, thread_stop);
+        commands_file_thread(cfg, tx, thread_stop, ctx);
     });
     (CommandsFileWatcher { stop, join: Some(join) }, rx)
 }
 
-fn commands_file_thread(cfg: CommandsFileConfig, tx: mpsc::UnboundedSender<RemoteCmd>, stop: Arc<AtomicBool>) {
+fn commands_file_thread(
+    cfg: CommandsFileConfig,
+    tx: mpsc::UnboundedSender<RemoteCmd>,
+    stop: Arc<AtomicBool>,
+    ctx: egui::Context,
+) {
     let mut state = CommandsFileState::default();
     let poll_interval = cfg.poll_interval.max(Duration::from_millis(50));
     let mut inotify = InotifyHandle::new(&cfg.path);
@@ -117,13 +166,13 @@ fn commands_file_thread(cfg: CommandsFileConfig, tx: mpsc::UnboundedSender<Remot
         eprintln!("Commands file: using polling for {}", cfg.path.display());
     }
 
-    read_commands_file(&cfg.path, &mut state, &tx);
+    read_commands_file(&cfg.path, &mut state, &tx, &ctx);
     let mut last_poll = Instant::now();
 
     while !stop.load(Ordering::Relaxed) {
         let event_seen = inotify.as_mut().is_some_and(|h| h.drain_events());
         if event_seen || last_poll.elapsed() >= poll_interval {
-            read_commands_file(&cfg.path, &mut state, &tx);
+            read_commands_file(&cfg.path, &mut state, &tx, &ctx);
             last_poll = Instant::now();
         }
         std::thread::sleep(Duration::from_millis(100).min(poll_interval));
@@ -136,7 +185,12 @@ struct CommandsFileState {
     last_modified: Option<std::time::SystemTime>,
 }
 
-fn read_commands_file(path: &std::path::Path, state: &mut CommandsFileState, tx: &mpsc::UnboundedSender<RemoteCmd>) {
+fn read_commands_file(
+    path: &std::path::Path,
+    state: &mut CommandsFileState,
+    tx: &mpsc::UnboundedSender<RemoteCmd>,
+    ctx: &egui::Context,
+) {
     use std::io::{Read, Seek, SeekFrom};
 
     let Ok(mut file) = std::fs::File::open(path) else {
@@ -167,13 +221,18 @@ fn read_commands_file(path: &std::path::Path, state: &mut CommandsFileState, tx:
     state.offset = metadata.len();
     state.last_modified = modified;
 
+    let mut any_sent = false;
     for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
         match parse_cmd(line) {
             Some(cmd) => {
                 let _ = tx.send(cmd);
+                any_sent = true;
             }
             None => eprintln!("Commands file: unrecognised command in {}: {line}", path.display()),
         }
+    }
+    if any_sent {
+        ctx.request_repaint();
     }
 }
 
@@ -269,26 +328,70 @@ mod tests {
 
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut state = CommandsFileState::default();
-        read_commands_file(&path, &mut state, &tx);
+        let ctx = egui::Context::default();
+        read_commands_file(&path, &mut state, &tx, &ctx);
 
         let cmd = rx.try_recv().unwrap();
-        assert_eq!(cmd.file, PathBuf::from("/tmp/a_master.h5"));
-        assert_eq!(cmd.frame, 1);
+        match cmd {
+            RemoteCmd::LoadFrame { file, frame } => {
+                assert_eq!(file, PathBuf::from("/tmp/a_master.h5"));
+                assert_eq!(frame, 1);
+            }
+            RemoteCmd::PlayMovie { .. } => panic!("expected LoadFrame"),
+        }
         assert!(rx.try_recv().is_err());
 
-        read_commands_file(&path, &mut state, &tx);
+        read_commands_file(&path, &mut state, &tx, &ctx);
         assert!(rx.try_recv().is_err());
 
         let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
         writeln!(file, "{{\"file\":\"/tmp/b_master.h5\",\"frame\":2}}").unwrap();
         drop(file);
 
-        read_commands_file(&path, &mut state, &tx);
+        read_commands_file(&path, &mut state, &tx, &ctx);
         let cmd = rx.try_recv().unwrap();
-        assert_eq!(cmd.file, PathBuf::from("/tmp/b_master.h5"));
-        assert_eq!(cmd.frame, 2);
+        match cmd {
+            RemoteCmd::LoadFrame { file, frame } => {
+                assert_eq!(file, PathBuf::from("/tmp/b_master.h5"));
+                assert_eq!(frame, 2);
+            }
+            RemoteCmd::PlayMovie { .. } => panic!("expected LoadFrame"),
+        }
         assert!(rx.try_recv().is_err());
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn parse_cmd_recognises_movie_command() {
+        let cmd = parse_cmd(r#"{"file": "/tmp/c_master.h5", "movie": 15}"#).unwrap();
+        match cmd {
+            RemoteCmd::PlayMovie { file, fps } => {
+                assert_eq!(file, PathBuf::from("/tmp/c_master.h5"));
+                assert_eq!(fps, 15);
+            }
+            RemoteCmd::LoadFrame { .. } => panic!("expected PlayMovie"),
+        }
+    }
+
+    #[test]
+    fn parse_cmd_recognises_movie_stop_command() {
+        let cmd = parse_cmd(r#"{"file": "/tmp/c_master.h5", "movie": 0}"#).unwrap();
+        match cmd {
+            RemoteCmd::PlayMovie { fps, .. } => assert_eq!(fps, 0),
+            RemoteCmd::LoadFrame { .. } => panic!("expected PlayMovie"),
+        }
+    }
+
+    #[test]
+    fn parse_cmd_recognises_frame_command() {
+        let cmd = parse_cmd(r#"{"file": "/tmp/d_master.h5", "frame": 7}"#).unwrap();
+        match cmd {
+            RemoteCmd::LoadFrame { file, frame } => {
+                assert_eq!(file, PathBuf::from("/tmp/d_master.h5"));
+                assert_eq!(frame, 7);
+            }
+            RemoteCmd::PlayMovie { .. } => panic!("expected LoadFrame"),
+        }
     }
 }

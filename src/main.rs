@@ -219,7 +219,6 @@ fn main() -> anyhow::Result<()> {
     let _guard = rt.enter();
 
     let remote_port = cfg.remote_port.unwrap_or(8100);
-    let remote_rx = remote::start_remote_listener(remote_port);
     let commands_file = cfg.commands_file.clone();
     let commands_file_enabled = cfg
         .commands_file_enabled
@@ -246,6 +245,7 @@ fn main() -> anyhow::Result<()> {
             if let Some(scale) = ui_scale {
                 cc.egui_ctx.set_pixels_per_point(scale);
             }
+            let remote_rx = remote::start_remote_listener(remote_port, cc.egui_ctx.clone());
             Ok(Box::new(PumpkinApp::new(cc, dcu_url, poll_period_ms, unfocused_poll_period_ms, monitor_pause_ms, idle_pause_secs, auto_connect, contrast, overlays, splash_folder, remote_rx, commands_file, commands_file_enabled, commands_file_poll_interval_ms, data_browser_cfg)))
         }),
     )

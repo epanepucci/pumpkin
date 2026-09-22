@@ -213,7 +213,21 @@ External tools can push a file and frame number to display by sending newline-de
 echo '{"file": "/data/run1_master.h5", "frame": 42}' | nc localhost 8100
 ```
 
-The same JSON format is accepted in the commands file configured via `commands_file` in `config.toml`. The file is watched with inotify (Linux) plus polling, so writes on NFS/GPFS-backed paths are handled reliably.
+They can also open a file and start movie playback at a given frame rate:
+
+```bash
+echo '{"file": "/data/run1_master.h5", "movie": 10}' | nc localhost 8100
+```
+
+An fps of `0` stops playback and reverts the display to the live monitor feed (the `file` field is ignored in this case):
+
+```bash
+echo '{"file": "/data/run1_master.h5", "movie": 0}' | nc localhost 8100
+```
+
+For each command sent over the TCP socket, the app writes back one line once the command has actually been applied: `ok` on success, or `error: <message>` if the command couldn't be parsed, the file failed to load, or (for `movie`) playback couldn't start. A connection can send multiple newline-delimited commands and will get one reply line per command, in order.
+
+The same JSON formats are accepted in the commands file configured via `commands_file` in `config.toml`, though that path has no client connection to reply to, so failures there are only logged to stderr. The file is watched with inotify (Linux) plus polling, so writes on NFS/GPFS-backed paths are handled reliably.
 
 ## Deployment
 

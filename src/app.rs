@@ -146,7 +146,7 @@ pub struct PumpkinApp {
     line_profile_data: Vec<f32>,
     line_profile_width: u32,
 
-    remote_rx: tokio::sync::mpsc::UnboundedReceiver<crate::remote::RemoteCmd>,
+    remote_rx: tokio::sync::mpsc::UnboundedReceiver<crate::remote::RemoteRequest>,
     commands_file_enabled: bool,
     commands_file_path: String,
     commands_file_poll_interval_ms: u64,
@@ -199,7 +199,7 @@ impl PumpkinApp {
         contrast: ContrastState,
         overlays: OverlaySettings,
         splash_folder: Option<std::path::PathBuf>,
-        remote_rx: tokio::sync::mpsc::UnboundedReceiver<crate::remote::RemoteCmd>,
+        remote_rx: tokio::sync::mpsc::UnboundedReceiver<crate::remote::RemoteRequest>,
         commands_file: Option<std::path::PathBuf>,
         commands_file_enabled: bool,
         commands_file_poll_interval_ms: u64,
@@ -395,10 +395,27 @@ impl PumpkinApp {
             self.movie_playing = false;
             return;
         }
-        let Some(total) = self.hdf5_series.as_ref().map(|s| s.total_frames) else { return };
+        self.start_movie_playback();
+    }
+
+    /// Begin movie playback at `self.movie_fps`. Only available for an HDF5 series
+    /// outside monitor mode. Starting on the last group rewinds to the first frame.
+    fn start_movie_playback(&mut self) {
         if self.connected {
             return;
         }
+        self.start_movie_playback_inner();
+    }
+
+    /// Like `start_movie_playback`, but for remote commands: allowed to start even
+    /// while `connected` to the live monitor, since the on-demand display (already
+    /// showing a remote-selected HDF5 frame) holds regardless of the live feed.
+    fn start_movie_playback_remote(&mut self) {
+        self.start_movie_playback_inner();
+    }
+
+    fn start_movie_playback_inner(&mut self) {
+        let Some(total) = self.hdf5_series.as_ref().map(|s| s.total_frames) else { return };
         let grouping = self.hdf5_grouping.max(1);
         if self.hdf5_frame_index + grouping >= total && total > grouping {
             self.hdf5_frame_index = 0;
@@ -406,6 +423,23 @@ impl PumpkinApp {
         }
         self.movie_playing = true;
         self.movie_last_advance = std::time::Instant::now();
+    }
+
+    /// Stop movie playback, discard the on-demand HDF5 series, and resume showing
+    /// the live-monitored frames.
+    fn stop_movie_and_resume_monitoring(&mut self) {
+        self.movie_playing = false;
+        self.on_demand_active = false;
+        self.hdf5_series = None;
+        self.hdf5_loader = None;
+        self.hdf5_awaiting = None;
+        self.hdf5_master_path = None;
+        self.monitor_selected_id = self.monitor_image_ids.last().copied();
+        self.monitor_frame_index = self.monitor_frames.len().saturating_sub(1);
+        self.monitor_prefetcher.invalidate();
+        if let Some(frame) = self.monitor_frames.get(self.monitor_frame_index) {
+            self.display_frame(frame.clone());
+        }
     }
 
     /// Show the frame (or group of `hdf5_grouping` frames) starting at `start_index`.
@@ -764,7 +798,7 @@ impl PumpkinApp {
             path: std::path::PathBuf::from(path_text),
             poll_interval,
         };
-        let (watcher, rx) = crate::remote::start_commands_file_watcher(cfg);
+        let (watcher, rx) = crate::remote::start_commands_file_watcher(cfg, self.egui_ctx.clone());
         self.commands_file_watcher = Some(watcher);
         self.commands_file_rx = Some(rx);
     }
@@ -802,26 +836,52 @@ impl PumpkinApp {
         self.pending_fit = true;
     }
 
-    fn handle_remote_cmd(&mut self, cmd: crate::remote::RemoteCmd) {
-        let path = cmd.file.as_path();
-        if self.hdf5_master_path.as_deref() != Some(path) {
-            if let Err(e) = self.load_hdf5_master(path) {
-                eprintln!("Remote: failed to load {}: {e:#}", path.display());
-                return;
+    /// Load `path` as the HDF5 master, unless it's already the one loaded. Returns
+    /// `Err` (after logging) if loading fails.
+    fn ensure_hdf5_master(&mut self, path: &std::path::Path) -> Result<(), String> {
+        if self.hdf5_master_path.as_deref() == Some(path) {
+            return Ok(());
+        }
+        self.load_hdf5_master(path).map_err(|e| {
+            let msg = format!("failed to load {}: {e:#}", path.display());
+            eprintln!("Remote: {msg}");
+            msg
+        })
+    }
+
+    fn handle_remote_cmd(&mut self, cmd: crate::remote::RemoteCmd) -> Result<(), String> {
+        match cmd {
+            crate::remote::RemoteCmd::LoadFrame { file, frame } => {
+                self.ensure_hdf5_master(&file)?;
+                let grouping = self.hdf5_grouping.max(1);
+                let snapped = (frame / grouping) * grouping;
+                let snapped = if let Some(ref s) = self.hdf5_series {
+                    snapped.min(s.total_frames.saturating_sub(1))
+                } else {
+                    snapped
+                };
+                self.hdf5_frame_index = snapped;
+                self.load_hdf5_grouped(snapped);
+                // Hold the live monitor display in place while showing a remote HDF5 frame.
+                // on_monitor_batch clears this when a new detector series is detected.
+                self.on_demand_active = true;
+                Ok(())
+            }
+            crate::remote::RemoteCmd::PlayMovie { file: _, fps: 0 } => {
+                self.stop_movie_and_resume_monitoring();
+                Ok(())
+            }
+            crate::remote::RemoteCmd::PlayMovie { file, fps } => {
+                self.ensure_hdf5_master(&file)?;
+                self.movie_fps = fps as f32;
+                self.on_demand_active = true;
+                self.start_movie_playback_remote();
+                if !self.movie_playing {
+                    return Err("could not start movie playback (no frames in series?)".to_string());
+                }
+                Ok(())
             }
         }
-        let grouping = self.hdf5_grouping.max(1);
-        let snapped = (cmd.frame / grouping) * grouping;
-        let snapped = if let Some(ref s) = self.hdf5_series {
-            snapped.min(s.total_frames.saturating_sub(1))
-        } else {
-            snapped
-        };
-        self.hdf5_frame_index = snapped;
-        self.load_hdf5_grouped(snapped);
-        // Hold the live monitor display in place while showing a remote HDF5 frame.
-        // on_monitor_batch clears this when a new detector series is detected.
-        self.on_demand_active = true;
     }
 
     fn on_monitor_batch(&mut self, batch: MonitorBatch) {
@@ -2047,8 +2107,11 @@ impl eframe::App for PumpkinApp {
         let movie_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::P);
         let rings_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::R);
 
-        // Movie mode never runs against the live monitor or without an HDF5 series.
-        if self.movie_playing && (self.connected || self.hdf5_series.is_none()) {
+        // Movie mode never runs without an HDF5 series, nor against the live monitor
+        // display — but a remote-started movie is allowed to keep playing while
+        // connected, since on_demand_active means it's showing the on-demand HDF5
+        // series rather than the live feed.
+        if self.movie_playing && (self.hdf5_series.is_none() || (self.connected && !self.on_demand_active)) {
             self.movie_playing = false;
         }
         if ctx.input_mut(|i| i.consume_shortcut(&rings_shortcut)) {
@@ -2237,9 +2300,11 @@ impl eframe::App for PumpkinApp {
             ctx.request_repaint();
         }
 
-        // Receive remote commands (load HDF5 file + frame from external client).
-        while let Ok(cmd) = self.remote_rx.try_recv() {
-            self.handle_remote_cmd(cmd);
+        // Receive remote commands (load HDF5 file + frame, or start/stop movie,
+        // from an external client), acknowledging each one back over its socket.
+        while let Ok(req) = self.remote_rx.try_recv() {
+            let result = self.handle_remote_cmd(req.cmd);
+            let _ = req.ack.send(result);
             ctx.request_repaint();
         }
         if let Some(rx) = &mut self.commands_file_rx {
@@ -2248,7 +2313,7 @@ impl eframe::App for PumpkinApp {
                 commands.push(cmd);
             }
             for cmd in commands {
-                self.handle_remote_cmd(cmd);
+                let _ = self.handle_remote_cmd(cmd);
                 ctx.request_repaint();
             }
         }
