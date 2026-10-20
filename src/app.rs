@@ -853,6 +853,8 @@ impl PumpkinApp {
         match cmd {
             crate::remote::RemoteCmd::LoadFrame { file, frame } => {
                 self.ensure_hdf5_master(&file)?;
+                // Remote frame numbers are 1-based; internal indices are 0-based.
+                let frame = frame.saturating_sub(1);
                 let grouping = self.hdf5_grouping.max(1);
                 let snapped = (frame / grouping) * grouping;
                 let snapped = if let Some(ref s) = self.hdf5_series {

@@ -29,7 +29,8 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(10);
 /// forwards them to the returned channel receiver, and writes a one-line
 /// acknowledgement (`ok` or `error: <message>`) back to the client once the app
 /// has applied each command. Two command shapes are recognised:
-/// - `{"file": "/path/to/master.h5", "frame": 42}` — load and display a frame.
+/// - `{"file": "/path/to/master.h5", "frame": 42}` — load and display a frame
+///   (1-based: `42` shows internal index 41; `0` is treated as `1`).
 /// - `{"file": "/path/to/master.h5", "movie": 10}` — load the series and start
 ///   movie playback at the given fps (`0` stops playback and resumes monitoring).
 ///
@@ -65,6 +66,7 @@ pub fn start_remote_listener(port: u16, ctx: egui::Context) -> mpsc::UnboundedRe
                     if line.is_empty() {
                         continue;
                     }
+                    eprintln!("Remote: received from {peer}: {line}");
                     let reply = match parse_cmd(&line) {
                         Some(cmd) => {
                             let (ack_tx, ack_rx) = oneshot::channel();
@@ -223,6 +225,7 @@ fn read_commands_file(
 
     let mut any_sent = false;
     for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        eprintln!("Commands file: received from {}: {line}", path.display());
         match parse_cmd(line) {
             Some(cmd) => {
                 let _ = tx.send(cmd);
