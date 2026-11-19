@@ -1455,8 +1455,8 @@ impl PumpkinApp {
                 }
                 // vmin / vmax markers
                 let to_x = |v: f32| rect.left() + (v / sat as f32).clamp(0.0, 1.0) * rect.width();
-                let stroke_vmin = egui::Stroke::new(1.5, egui::Color32::from_rgb(80, 200, 80));
-                let stroke_vmax = egui::Stroke::new(1.5, egui::Color32::from_rgb(200, 80, 80));
+                let stroke_vmin = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(80, 200, 80));
+                let stroke_vmax = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(200, 80, 80));
                 let vmin_x = to_x(self.contrast.vmin);
                 let vmax_x = to_x(self.contrast.vmax);
                 painter.line_segment([egui::pos2(vmin_x, rect.top()), egui::pos2(vmin_x, rect.bottom())], stroke_vmin);
@@ -1810,7 +1810,7 @@ impl PumpkinApp {
 
                     painter.rect_filled(loupe_rect, 2.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 220));
                     painter.image(texture_id, loupe_rect, uv, egui::Color32::WHITE);
-                    painter.rect_stroke(loupe_rect, 2.0, egui::Stroke::new(1.5, egui::Color32::WHITE), egui::StrokeKind::Outside);
+                    painter.rect_stroke(loupe_rect, 2.0, egui::Stroke::new(1.5_f32, egui::Color32::WHITE), egui::StrokeKind::Outside);
 
                     // Pixel value labels — one per source pixel, centered in its cell.
                     // Label colour is chosen for contrast against the rendered pixel colour.
@@ -1845,7 +1845,7 @@ impl PumpkinApp {
                     let ch_y = loupe_origin.y + ((iy_int as f32 + 0.5) / fh - uv.min.y) / uv_h * LOUPE_PX;
                     let cell = LOUPE_PX / (uv_w * fw);
                     let arm = cell * 0.4;
-                    let ch_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 80, 80, 220));
+                    let ch_stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(255, 80, 80, 220));
                     let c = egui::pos2(ch_x, ch_y);
                     painter.line_segment([egui::pos2(c.x - arm, c.y), egui::pos2(c.x + arm, c.y)], ch_stroke);
                     painter.line_segment([egui::pos2(c.x, c.y - arm), egui::pos2(c.x, c.y + arm)], ch_stroke);
@@ -1875,10 +1875,10 @@ impl PumpkinApp {
                         egui::pos2(se.x - nx * half_w, se.y - ny * half_w),
                         egui::pos2(se.x + nx * half_w, se.y + ny * half_w),
                     ];
-                    painter.add(egui::Shape::convex_polygon(pts, amber_fill, egui::Stroke::new(0.8, amber_edge)));
+                    painter.add(egui::Shape::convex_polygon(pts, amber_fill, egui::Stroke::new(0.8_f32, amber_edge)));
                 }
 
-                painter.line_segment([ss, se], egui::Stroke::new(1.5, amber));
+                painter.line_segment([ss, se], egui::Stroke::new(1.5_f32, amber));
                 painter.circle_filled(ss, 3.5, amber);
                 painter.circle_filled(se, 3.5, amber);
 
@@ -2013,7 +2013,7 @@ impl PumpkinApp {
 
         // Axes
         let axis_color = egui::Color32::from_rgba_unmultiplied(180, 180, 180, 200);
-        let axis_stroke = egui::Stroke::new(1.0, axis_color);
+        let axis_stroke = egui::Stroke::new(1.0_f32, axis_color);
         painter.line_segment([plot.left_bottom(), plot.right_bottom()], axis_stroke);
         painter.line_segment([plot.left_bottom(), plot.left_top()], axis_stroke);
 
@@ -2048,7 +2048,7 @@ impl PumpkinApp {
 
         // Profile line
         let pts: Vec<egui::Pos2> = (0..n).map(|i| egui::pos2(x_of(i), y_of(data[i]))).collect();
-        painter.add(egui::Shape::line(pts, egui::Stroke::new(1.5, egui::Color32::from_rgb(100, 210, 255))));
+        painter.add(egui::Shape::line(pts, egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 210, 255))));
 
         if peaks.is_empty() {
             return;
@@ -2056,7 +2056,7 @@ impl PumpkinApp {
 
         let peak_color = egui::Color32::from_rgb(255, 200, 50);
         let gap_color = egui::Color32::from_rgb(230, 230, 230);
-        let marker_stroke = egui::Stroke::new(1.0, peak_color);
+        let marker_stroke = egui::Stroke::new(1.0_f32, peak_color);
         for peak in peaks {
             let x = x_of(peak.index);
             painter.line_segment([egui::pos2(x, plot.top()), egui::pos2(x, plot.bottom())], marker_stroke);
@@ -2084,7 +2084,7 @@ impl PumpkinApp {
             }
             let real_space = 1.0 / delta_inv_d;
             let y = plot.top() + 10.0;
-            let stroke = egui::Stroke::new(1.0, gap_color);
+            let stroke = egui::Stroke::new(1.0_f32, gap_color);
             painter.line_segment([egui::pos2(x0, y), egui::pos2(x1, y)], stroke);
             painter.line_segment([egui::pos2(x0, y - 3.0), egui::pos2(x0, y + 3.0)], stroke);
             painter.line_segment([egui::pos2(x1, y - 3.0), egui::pos2(x1, y + 3.0)], stroke);

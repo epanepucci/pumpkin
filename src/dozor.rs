@@ -187,7 +187,7 @@ pub fn draw_chart(painter: &egui::Painter, rect: egui::Rect, data: &DozorData, c
     let cx = x_of(data.frames[ci].number);
     painter.line_segment(
         [egui::pos2(cx, rect.top()), egui::pos2(cx, rect.bottom())],
-        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 130)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 130)),
     );
 
     // Legend: colored swatch + "Label value" for the current frame.
@@ -205,7 +205,7 @@ pub fn draw_chart(painter: &egui::Painter, rect: egui::Rect, data: &DozorData, c
         // Small colored dash.
         painter.line_segment(
             [egui::pos2(lx, ly + 5.5), egui::pos2(lx + 10.0, ly + 5.5)],
-            egui::Stroke::new(2.0, *color),
+            egui::Stroke::new(2.0_f32, *color),
         );
         lx += 13.0;
         // Label text.
@@ -223,6 +223,6 @@ pub fn draw_chart(painter: &egui::Painter, rect: egui::Rect, data: &DozorData, c
 fn draw_polyline(painter: &egui::Painter, pts: impl Iterator<Item = egui::Pos2>, color: egui::Color32) {
     let points: Vec<egui::Pos2> = pts.collect();
     if points.len() >= 2 {
-        painter.add(egui::Shape::line(points, egui::Stroke::new(1.0, color)));
+        painter.add(egui::Shape::line(points, egui::Stroke::new(1.0_f32, color)));
     }
 }
