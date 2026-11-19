@@ -1,4 +1,5 @@
 mod app;
+mod cbf_loader;
 mod config;
 mod contrast;
 mod data_browser;

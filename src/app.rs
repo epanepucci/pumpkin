@@ -271,7 +271,10 @@ impl PumpkinApp {
             splash_loaded: false,
             last_location: Self::load_last_location(),
             file_dialog: FileDialog::new()
-                .add_file_filter_extensions("HDF5 master", vec!["h5"]),
+                .add_file_filter_extensions("HDF5 master or CBF", vec!["h5", "cbf"])
+                .add_file_filter_extensions("HDF5 master", vec!["h5"])
+                .add_file_filter_extensions("CBF image", vec!["cbf"])
+                .default_file_filter("HDF5 master or CBF"),
             data_browser: data_browser_cfg.map(crate::data_browser::DataBrowser::new),
             dozor_data: None,
             dozor_collapsed: false,
@@ -385,6 +388,25 @@ impl PumpkinApp {
         self.dozor_data = crate::dozor::find_dozor_json(path)
             .and_then(|p| crate::dozor::load_dozor(&p));
         self.dozor_collapsed = false;
+        Ok(())
+    }
+
+    /// Open `path` as a single CBF image, or otherwise as an HDF5 master.
+    pub fn load_image_file(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
+        if crate::cbf_loader::is_cbf_path(path) { self.load_cbf_file(path) } else { self.load_hdf5_master(path) }
+    }
+
+    /// Show a single CBF image, discarding any open HDF5 series.
+    pub fn load_cbf_file(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
+        let frame = crate::cbf_loader::load_cbf(path)?;
+        self.movie_playing = false;
+        self.hdf5_master_path = None;
+        self.hdf5_series = None;
+        self.hdf5_loader = None;
+        self.hdf5_awaiting = None;
+        self.hdf5_frame_index = 0;
+        self.on_new_frame(Arc::new(frame));
+        self.dozor_data = None;
         Ok(())
     }
 
@@ -606,7 +628,7 @@ impl PumpkinApp {
                     ui.label("Ctrl-0"); ui.label("Fit image to view"); ui.end_row();
                     ui.label("Ctrl-1"); ui.label("Zoom to 1:1"); ui.end_row();
                     ui.label("Left / Right"); ui.label("Previous / Next frame"); ui.end_row();
-                    ui.label("Ctrl+O"); ui.label("Open HDF5 master"); ui.end_row();
+                    ui.label("Ctrl+O"); ui.label("Open HDF5 master or CBF image"); ui.end_row();
                     ui.label("Ctrl+G"); ui.label("Go to frame number"); ui.end_row();
                     ui.label("Ctrl+S"); ui.label("Save current image as PNG"); ui.end_row();
                     ui.label("Ctrl+C"); ui.label("Copy current image to clipboard"); ui.end_row();
@@ -643,7 +665,7 @@ impl PumpkinApp {
             .show(ctx, |ui| {
                 ui.heading("Open file");
                 ui.horizontal(|ui| {
-                    if ui.button("Open HDF5…").on_hover_text("Open HDF5 master file (Ctrl+O)").clicked() {
+                    if ui.button("Open…").on_hover_text("Open HDF5 master or CBF image file (Ctrl+O)").clicked() {
                         self.open_hdf5_dialog();
                     }
                     let save_enabled = self.frame.is_some();
@@ -851,6 +873,18 @@ impl PumpkinApp {
 
     fn handle_remote_cmd(&mut self, cmd: crate::remote::RemoteCmd) -> Result<(), String> {
         match cmd {
+            crate::remote::RemoteCmd::LoadFrame { file, frame: _ } if crate::cbf_loader::is_cbf_path(&file) => {
+                // A CBF holds a single image, so the frame number is ignored. Always
+                // re-read it: the same path may have been overwritten with a new image.
+                self.load_cbf_file(&file).map_err(|e| {
+                    let msg = format!("failed to load {}: {e:#}", file.display());
+                    eprintln!("Remote: {msg}");
+                    msg
+                })?;
+                // Hold the live monitor display, as for a remote HDF5 frame below.
+                self.on_demand_active = true;
+                Ok(())
+            }
             crate::remote::RemoteCmd::LoadFrame { file, frame } => {
                 self.ensure_hdf5_master(&file)?;
                 // Remote frame numbers are 1-based; internal indices are 0-based.
@@ -872,6 +906,9 @@ impl PumpkinApp {
             crate::remote::RemoteCmd::PlayMovie { file: _, fps: 0 } => {
                 self.stop_movie_and_resume_monitoring();
                 Ok(())
+            }
+            crate::remote::RemoteCmd::PlayMovie { file, .. } if crate::cbf_loader::is_cbf_path(&file) => {
+                Err(format!("movie playback needs an HDF5 series, not a single CBF image: {}", file.display()))
             }
             crate::remote::RemoteCmd::PlayMovie { file, fps } => {
                 self.ensure_hdf5_master(&file)?;
@@ -2384,14 +2421,14 @@ impl eframe::App for PumpkinApp {
 
         self.file_dialog.update(ctx);
         if let Some(path) = self.file_dialog.take_picked() {
-            eprintln!("Loading HDF5: {}", path.display());
+            eprintln!("Loading: {}", path.display());
             self.disconnect();
             if let Some(parent) = path.parent() {
                 self.last_location = Some(parent.to_path_buf());
                 self.save_last_location();
             }
-            if let Err(e) = self.load_hdf5_master(&path) {
-                eprintln!("Failed to open {}: {e}", path.display());
+            if let Err(e) = self.load_image_file(&path) {
+                eprintln!("Failed to open {}: {e:#}", path.display());
             }
         }
 

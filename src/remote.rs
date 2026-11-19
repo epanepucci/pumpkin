@@ -30,9 +30,11 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(10);
 /// acknowledgement (`ok` or `error: <message>`) back to the client once the app
 /// has applied each command. Two command shapes are recognised:
 /// - `{"file": "/path/to/master.h5", "frame": 42}` — load and display a frame
-///   (1-based: `42` shows internal index 41; `0` is treated as `1`).
+///   (1-based: `42` shows internal index 41; `0` is treated as `1`). A `.cbf`
+///   file is loaded as a single image and `frame` is ignored.
 /// - `{"file": "/path/to/master.h5", "movie": 10}` — load the series and start
 ///   movie playback at the given fps (`0` stops playback and resumes monitoring).
+///   Not supported for `.cbf` files, except `0` to stop.
 ///
 /// `ctx` is used to wake the UI thread the moment a command is queued — without
 /// it, an idle app (no periodic repaints, e.g. not connected to the live monitor)
