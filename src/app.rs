@@ -2037,6 +2037,15 @@ impl PumpkinApp {
             if x1 - x0 < 28.0 {
                 continue;
             }
+            // Two adjacent spots along a diffraction row sit at reciprocal-space
+            // positions 1/d spaced by 1/a, where `a` is the real-space periodicity
+            // that produced them — so `a` is the reciprocal of the difference in
+            // 1/d, not the difference of d itself (which isn't evenly spaced).
+            let delta_inv_d = (1.0 / db - 1.0 / da).abs();
+            if delta_inv_d <= 0.0 {
+                continue;
+            }
+            let real_space = 1.0 / delta_inv_d;
             let y = plot.top() + 10.0;
             let stroke = egui::Stroke::new(1.0, gap_color);
             painter.line_segment([egui::pos2(x0, y), egui::pos2(x1, y)], stroke);
@@ -2045,7 +2054,7 @@ impl PumpkinApp {
             painter.text(
                 egui::pos2((x0 + x1) * 0.5, y - 3.0),
                 egui::Align2::CENTER_BOTTOM,
-                format!("Δd {:.3} Å", (db - da).abs()),
+                format!("a {:.3} Å", real_space),
                 egui::FontId::monospace(9.0),
                 gap_color,
             );
